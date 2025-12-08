@@ -1,0 +1,149 @@
+# Codebase Visualizer with Cline Integration
+
+An advanced VS Code extension that provides interactive visualization of your codebase with AI-powered documentation and code modifications powered by Cline.
+
+## Features
+
+### 🎯 Interactive Code Visualization
+
+- **Function & Class Level Graphs**: Visualize your codebase as an interactive graph with nodes representing functions and classes
+- **Multi-level Navigation**: Click on nodes to drill down into implementation details
+- **Multiple Layout Options**: Hierarchical, force-directed, and circular layouts
+
+### 📚 Persona-Based Documentation
+
+- **Developer Persona**: Technical documentation with implementation details, algorithms, and code patterns
+- **Product Manager Persona**: Business-focused documentation with features, user stories, and impact
+- **Architect Persona**: System design, architectural patterns, and technical decisions
+- **Business Analyst Persona**: Process flows, business logic, and requirements
+
+### 🤖 Cline Integration
+
+- **AI-Powered Code Modifications**: Click any node and enter a query to modify code using Cline
+- **Context-Aware Changes**: Cline receives full context of the selected function/class
+- **Real-time Updates**: Changes are reflected immediately in your codebase
+
+### 🔧 Supported Languages
+
+- Java (including Spring Boot, Jakarta EE)
+- React (JavaScript/TypeScript)
+- TypeScript/JavaScript
+
+## Installation
+
+1. Clone this repository
+2. Run `npm install`
+3. Press F5 to launch extension development host
+4. Or run `npm run package` to create VSIX file
+
+## Usage
+
+### Open Visualization
+
+1. Open a Java or React project
+2. Press `Ctrl+Shift+P` (Cmd+Shift+P on Mac)
+3. Run command: **"Show Codebase Visualization"**
+
+### Change Documentation Persona
+
+1. In the visualization panel, click the persona dropdown
+2. Select: Developer, Product Manager, Architect, or Business Analyst
+3. Documentation updates automatically
+
+### Modify Code with Cline
+
+1. Click on any function or class node in the graph
+2. In the popup, enter your modification request (e.g., "Add error handling", "Refactor to use async/await")
+3. Click "Send to Cline"
+4. Review and approve changes
+
+## Configuration
+
+```json
+{
+  "codebaseVisualizer.defaultPersona": "developer",
+  "codebaseVisualizer.graphLayout": "hierarchical",
+  "codebaseVisualizer.maxDepth": 3,
+  "codebaseVisualizer.clineIntegration": true
+}
+```
+
+## Architecture
+
+### Components
+
+- **AST Parsers**: Tree-sitter based parsers for Java and TypeScript/React
+- **Graph Builder**: Constructs visualization graph from parsed code
+- **Documentation Generator**: Persona-based documentation engine
+- **Cline Adapter**: Integration layer with Cline API
+- **WebView**: Interactive visualization UI using vis-network
+
+### Data Flow
+
+```
+Code Files → AST Parser → Graph Builder → Visualization
+                                        ↓
+                                  Node Click → Context Extraction → Cline API → Code Modification
+```
+
+## Development
+
+### Project Structure
+
+```
+codebase-visualizer/
+├── src/
+│   ├── extension.ts                 # Extension entry point
+│   ├── parsers/
+│   │   ├── javaParser.ts           # Java AST parser
+│   │   ├── reactParser.ts          # React/TS parser
+│   │   └── types.ts                # Common types
+│   ├── graph/
+│   │   ├── graphBuilder.ts         # Graph construction
+│   │   └── graphTypes.ts           # Graph data structures
+│   ├── documentation/
+│   │   ├── generator.ts            # Doc generation
+│   │   └── personas.ts             # Persona definitions
+│   ├── cline/
+│   │   ├── adapter.ts              # Cline integration
+│   │   └── contextBuilder.ts       # Context preparation
+│   └── webview/
+│       ├── visualizationPanel.ts   # WebView provider
+│       └── ui/                     # HTML/CSS/JS for UI
+└── package.json
+```
+
+### Adding New Language Support
+
+1. Add parser in `src/parsers/`
+2. Implement `CodeParser` interface
+3. Register in `GraphBuilder`
+
+### Customizing Personas
+
+Edit `src/documentation/personas.ts` to add or modify documentation styles.
+
+## Requirements
+
+- VS Code 1.84.0 or higher
+- Cline extension installed
+- Node.js 18+ for development
+
+## Contributing
+
+1. Fork the repository
+2. Create feature branch
+3. Submit pull request
+
+## License
+
+MIT
+
+## Credits
+
+Built on top of:
+
+- [Cline](https://github.com/cline/cline) - AI coding assistant
+- [vis-network](https://visjs.org/) - Graph visualization
+- [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) - Code parsing
+- [Babel](https://babeljs.io/) - JavaScript/TypeScript parsing

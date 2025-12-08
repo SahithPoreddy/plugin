@@ -1,0 +1,118 @@
+{
+  "name": "codebase-visualizer",
+  "displayName": "Codebase Visualizer with Cline",
+  "description": "Interactive codebase visualization with AI-powered documentation and code modifications using Cline",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.84.0"
+  },
+  "categories": [
+    "Visualization",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:java",
+    "onLanguage:typescript",
+    "onLanguage:typescriptreact",
+    "onLanguage:javascript",
+    "onLanguage:javascriptreact"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codebase-visualizer.showVisualization",
+        "title": "Show Codebase Visualization",
+        "category": "Codebase Visualizer"
+      },
+      {
+        "command": "codebase-visualizer.refreshVisualization",
+        "title": "Refresh Visualization",
+        "category": "Codebase Visualizer"
+      },
+      {
+        "command": "codebase-visualizer.changePersona",
+        "title": "Change Documentation Persona",
+        "category": "Codebase Visualizer"
+      },
+      {
+        "command": "codebase-visualizer.openLogFile",
+        "title": "Open Debug Log File",
+        "category": "Codebase Visualizer"
+      }
+    ],
+    "configuration": {
+      "title": "Codebase Visualizer",
+      "properties": {
+        "codebaseVisualizer.defaultPersona": {
+          "type": "string",
+          "enum": [
+            "developer",
+            "product-manager",
+            "architect",
+            "business-analyst"
+          ],
+          "default": "developer",
+          "description": "Default persona for documentation generation"
+        },
+        "codebaseVisualizer.graphLayout": {
+          "type": "string",
+          "enum": [
+            "hierarchical",
+            "force-directed",
+            "circular"
+          ],
+          "default": "hierarchical",
+          "description": "Graph layout algorithm"
+        },
+        "codebaseVisualizer.maxDepth": {
+          "type": "number",
+          "default": 3,
+          "description": "Maximum depth for code analysis"
+        },
+        "codebaseVisualizer.clineIntegration": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Cline integration for code modifications"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/babel__traverse": "^7.28.0",
+    "@types/node": "^20.x",
+    "@types/vscode": "^1.84.0",
+    "@typescript-eslint/eslint-plugin": "^6.x",
+    "@typescript-eslint/parser": "^6.x",
+    "css-loader": "^7.1.2",
+    "eslint": "^8.x",
+    "style-loader": "^4.0.0",
+    "ts-loader": "^9.x",
+    "typescript": "^5.x",
+    "webpack": "^5.x",
+    "webpack-cli": "^5.x"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.23.0",
+    "@babel/traverse": "^7.23.0",
+    "@babel/types": "^7.23.0",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "java-parser": "^2.0.0",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "reactflow": "^11.11.4",
+    "vis-network": "^9.1.9"
+  }
+}
