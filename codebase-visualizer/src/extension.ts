@@ -3,11 +3,15 @@ import { VisualizationPanelReact } from './webview/visualizationPanelReact';
 import { WorkspaceAnalyzer } from './analyzers/workspaceAnalyzer';
 import { ClineAdapter } from './cline/adapter';
 import { FileLogger } from './utils/fileLogger';
+import { CodebaseDocGenerator } from './documentation/codebaseDocGenerator';
+import { RAGService } from './rag/ragService';
 
 let visualizationPanel: VisualizationPanelReact | undefined;
 let workspaceAnalyzer: WorkspaceAnalyzer;
 let clineAdapter: ClineAdapter;
 let logger: FileLogger;
+let docGenerator: CodebaseDocGenerator;
+let ragService: RAGService;
 
 export async function activate(context: vscode.ExtensionContext) {
   // Initialize file logger
@@ -19,6 +23,8 @@ export async function activate(context: vscode.ExtensionContext) {
   // Initialize services
   workspaceAnalyzer = new WorkspaceAnalyzer();
   clineAdapter = new ClineAdapter();
+  docGenerator = new CodebaseDocGenerator();
+  ragService = new RAGService();
   
   // Show log file location
   logger.log('Extension services initialized');
@@ -94,7 +100,8 @@ async function showVisualization(context: vscode.ExtensionContext) {
     return;
   }
   
-  logger.log('Workspace folder', { path: workspaceFolders[0].uri.fsPath });
+  const workspaceUri = workspaceFolders[0].uri;
+  logger.log('Workspace folder', { path: workspaceUri.fsPath });
 
   // Show progress
   await vscode.window.withProgress(
@@ -110,20 +117,57 @@ async function showVisualization(context: vscode.ExtensionContext) {
       // Analyze workspace
       let analysisResult;
       try {
-        analysisResult = await workspaceAnalyzer.analyze(workspaceFolders[0].uri);
+        analysisResult = await workspaceAnalyzer.analyze(workspaceUri);
         logger.log('Workspace analysis completed successfully');
       } catch (error) {
         logger.error('Workspace analysis failed', error);
         throw error;
       }
 
-      progress.report({ increment: 50, message: 'Building visualization...' });
+      progress.report({ increment: 30, message: 'Generating documentation...' });
+      
+      // Generate codebase documentation
+      let documentation;
+      try {
+        documentation = await docGenerator.generateCodebaseDocs(analysisResult, workspaceUri);
+        logger.log('Documentation generated', { 
+          folder: docGenerator.getDocsFolder(),
+          components: documentation.components.length 
+        });
+        vscode.window.showInformationMessage(
+          `📚 Documentation generated in Agentic_Plugin_Docs folder (${documentation.components.length} components)`
+        );
+      } catch (error) {
+        logger.error('Documentation generation failed', error);
+        // Continue without docs
+      }
+
+      progress.report({ increment: 50, message: 'Indexing for RAG...' });
+      
+      // Initialize RAG service and index documents
+      try {
+        await ragService.initialize(workspaceUri);
+        
+        if (documentation) {
+          const ragChunks = docGenerator.generateRAGChunks(documentation);
+          await ragService.indexDocuments(ragChunks);
+          logger.log('RAG indexing complete', { 
+            chunks: ragChunks.length,
+            usingLocalFallback: ragService.isUsingLocalFallback()
+          });
+        }
+      } catch (error) {
+        logger.error('RAG indexing failed', error);
+        // Continue without RAG
+      }
+
+      progress.report({ increment: 70, message: 'Building visualization...' });
 
       // Create or show visualization panel
       if (visualizationPanel) {
         visualizationPanel.show();
       } else {
-        visualizationPanel = new VisualizationPanelReact(context, clineAdapter);
+        visualizationPanel = new VisualizationPanelReact(context, clineAdapter, ragService);
       }
 
       // Update panel with analysis results

@@ -3,12 +3,14 @@ import { AnalysisResult, Persona, CodeNode, ClineContext } from '../types/types'
 import { ClineAdapter } from '../cline/adapter';
 import { DocumentationGenerator } from '../documentation/generator';
 import { GraphBuilder } from '../graph/graphBuilder';
+import { RAGService } from '../rag/ragService';
 import * as path from 'path';
 
 export class VisualizationPanelReact {
   private panel: vscode.WebviewPanel | undefined;
   private context: vscode.ExtensionContext;
   private clineAdapter: ClineAdapter;
+  private ragService: RAGService | undefined;
   private docGenerator: DocumentationGenerator;
   private graphBuilder: GraphBuilder;
   private currentPersona: Persona = 'developer';
@@ -17,9 +19,10 @@ export class VisualizationPanelReact {
   private webviewReady: boolean = false;
   private pendingMessages: any[] = [];
 
-  constructor(context: vscode.ExtensionContext, clineAdapter: ClineAdapter) {
+  constructor(context: vscode.ExtensionContext, clineAdapter: ClineAdapter, ragService?: RAGService) {
     this.context = context;
     this.clineAdapter = clineAdapter;
+    this.ragService = ragService;
     this.docGenerator = new DocumentationGenerator();
     this.graphBuilder = new GraphBuilder();
     this.createPanel();
@@ -95,21 +98,69 @@ export class VisualizationPanelReact {
     const node = this.currentAnalysis.graph.nodes.find(n => n.id === nodeId);
     if (!node) return;
 
-    // Get dependencies and dependents
-    const dependencies = this.graphBuilder.getDependencies(this.currentAnalysis.graph, nodeId);
-    const dependents = this.graphBuilder.getDependents(this.currentAnalysis.graph, nodeId);
+    let popupData: any;
 
-    // Generate documentation
-    const documentation = this.docGenerator.generateForNode(node, this.currentPersona);
+    // Try to get data from RAG service first
+    if (this.ragService) {
+      try {
+        const ragInfo = await this.ragService.getComponentInfo(node.label);
+        if (ragInfo) {
+          popupData = {
+            name: ragInfo.name,
+            type: ragInfo.type,
+            summary: ragInfo.summary,
+            details: ragInfo.details,
+            dependencies: ragInfo.dependencies,
+            dependents: ragInfo.dependents,
+            patterns: ragInfo.patterns,
+            filePath: ragInfo.filePath || node.filePath,
+            sourcePreview: ragInfo.sourcePreview || node.sourceCode.split('\n').slice(0, 15).join('\n')
+          };
+        }
+      } catch (error) {
+        console.error('RAG lookup failed:', error);
+      }
+    }
 
-    // Send to webview
+    // Fallback to graph-based data if RAG didn't work
+    if (!popupData) {
+      const dependencies = this.graphBuilder.getDependencies(this.currentAnalysis.graph, nodeId);
+      const dependents = this.graphBuilder.getDependents(this.currentAnalysis.graph, nodeId);
+      const documentation = this.docGenerator.generateForNode(node, this.currentPersona);
+
+      popupData = {
+        name: node.label,
+        type: node.type,
+        summary: documentation,
+        details: `File: ${path.basename(node.filePath)}\nLines: ${node.startLine}-${node.endLine}\nLanguage: ${node.language}`,
+        dependencies: dependencies.map(d => d.label),
+        dependents: dependents.map(d => d.label),
+        patterns: this.detectPatterns(node.sourceCode),
+        filePath: node.filePath,
+        sourcePreview: node.sourceCode.split('\n').slice(0, 15).join('\n')
+      };
+    }
+
+    // Send popup data to webview
     this.panel?.webview.postMessage({
-      command: 'showNodeDetails',
-      node: node,
-      documentation: documentation,
-      dependencies: dependencies.map(d => d.label),
-      dependents: dependents.map(d => d.label)
+      command: 'showPopup',
+      data: popupData
     });
+  }
+
+  private detectPatterns(sourceCode: string): string[] {
+    const patterns: string[] = [];
+    if (!sourceCode) return patterns;
+
+    if (sourceCode.includes('useState')) patterns.push('State Management');
+    if (sourceCode.includes('useEffect')) patterns.push('Side Effects');
+    if (sourceCode.includes('fetch(') || sourceCode.includes('axios')) patterns.push('HTTP Requests');
+    if (sourceCode.includes('async ') && sourceCode.includes('await ')) patterns.push('Async/Await');
+    if (sourceCode.includes('try') && sourceCode.includes('catch')) patterns.push('Error Handling');
+    if (sourceCode.includes('useContext')) patterns.push('Context API');
+    if (sourceCode.includes('useRouter') || sourceCode.includes('useNavigate')) patterns.push('Routing');
+    
+    return patterns;
   }
 
   private async handleSendToCline(nodeId: string, query: string) {

@@ -11,35 +11,39 @@ const vscode = acquireVsCodeApi();
 interface VSCodeMessage {
   command: string;
   graph?: any;
-  node?: any;
-  documentation?: string;
-  dependencies?: string[];
-  dependents?: string[];
+  data?: PopupData;
+}
+
+interface PopupData {
+  name: string;
+  type: string;
+  summary: string;
+  details: string;
+  dependencies: string[];
+  dependents: string[];
+  patterns: string[];
+  filePath: string;
+  sourcePreview: string;
 }
 
 interface AppState {
   nodes: any[];
   edges: any[];
-  selectedNode: any | null;
-  documentation: string;
-  dependencies: string[];
-  dependents: string[];
-  persona: string;
+  popupData: PopupData | null;
+  showPopup: boolean;
 }
 
 const App: React.FC = () => {
   const [state, setState] = useState<AppState>({
     nodes: [],
     edges: [],
-    selectedNode: null,
-    documentation: '',
-    dependencies: [],
-    dependents: [],
-    persona: 'developer',
+    popupData: null,
+    showPopup: false,
   });
 
   const [queryText, setQueryText] = useState('');
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
+  const [activeTab, setActiveTab] = useState<'summary' | 'code' | 'deps'>('summary');
 
   useEffect(() => {
     console.log('Webview app mounted, sending ready signal...');
@@ -63,19 +67,17 @@ const App: React.FC = () => {
             nodes: message.graph?.nodes || [],
             edges: message.graph?.edges || [],
           }));
-          // Reset expanded nodes when graph updates
           setExpandedNodes(new Set());
           break;
 
-        case 'showNodeDetails':
-          console.log('Received node details:', message);
+        case 'showPopup':
+          console.log('Received popup data:', message.data);
           setState(prev => ({
             ...prev,
-            selectedNode: message.node,
-            documentation: message.documentation || '',
-            dependencies: message.dependencies || [],
-            dependents: message.dependents || [],
+            popupData: message.data || null,
+            showPopup: true,
           }));
+          setActiveTab('summary');
           break;
       }
     };
@@ -92,14 +94,8 @@ const App: React.FC = () => {
     });
   };
 
-  const handleSendToCline = () => {
-    if (state.selectedNode) {
-      const message = `${queryText}\n\nContext:\nNode: ${state.selectedNode.label}\nType: ${state.selectedNode.type}\n\nDocumentation:\n${state.documentation}`;
-      vscode.postMessage({
-        command: 'sendToCline',
-        message: message,
-      });
-    }
+  const handleClosePopup = () => {
+    setState(prev => ({ ...prev, showPopup: false }));
   };
 
   const handleOpenFile = (filePath: string) => {
@@ -109,20 +105,41 @@ const App: React.FC = () => {
     });
   };
 
+  const handleSendToCline = () => {
+    if (state.popupData && queryText.trim()) {
+      vscode.postMessage({
+        command: 'sendToCline',
+        message: `${queryText}\n\nContext:\nComponent: ${state.popupData.name}\nType: ${state.popupData.type}\n\nSummary:\n${state.popupData.summary}`,
+      });
+      setQueryText('');
+    }
+  };
+
   const handleCollapseAll = () => {
     setExpandedNodes(new Set());
   };
 
+  // Close popup on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && state.showPopup) {
+        handleClosePopup();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [state.showPopup]);
+
   return (
     <div style={{
-      display: 'flex',
       height: '100vh',
       width: '100%',
       backgroundColor: '#ffffff',
       overflow: 'hidden',
+      position: 'relative',
     }}>
       {/* Main Graph Area */}
-      <div style={{ flex: 1, position: 'relative' }}>
+      <div style={{ width: '100%', height: '100%', position: 'relative' }}>
         <ReactFlowProvider>
           {state.nodes.length === 0 ? (
             <div style={{
@@ -157,7 +174,7 @@ const App: React.FC = () => {
                 fontWeight: '500',
                 boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
               }}>
-                💡 Click <span style={{ background: '#3b82f6', color: 'white', padding: '2px 6px', borderRadius: '10px', fontWeight: 'bold' }}>+</span> on nodes to expand dependencies
+                💡 Click nodes for details • Click <span style={{ background: '#3b82f6', color: 'white', padding: '2px 6px', borderRadius: '10px', fontWeight: 'bold' }}>+</span> to expand
               </div>
               
               {expandedNodes.size > 0 && (
@@ -198,125 +215,372 @@ const App: React.FC = () => {
         </ReactFlowProvider>
       </div>
 
-      {/* Side Panel */}
-      {state.selectedNode && (
-        <div style={{
-          width: '350px',
-          borderLeft: '1px solid #e5e7eb',
-          background: '#f9fafb',
-          overflowY: 'auto',
-          display: 'flex',
-          flexDirection: 'column',
-        }}>
-          {/* Node Details */}
-          <div style={{ padding: '16px', borderBottom: '1px solid #e5e7eb' }}>
-            <h3 style={{ margin: '0 0 8px 0', fontSize: '16px', color: '#1f2937' }}>
-              {state.selectedNode.label}
-            </h3>
-            <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '8px' }}>
-              Type: {state.selectedNode.type}
-            </div>
-            {state.selectedNode.filePath && (
+      {/* Popup Modal Overlay */}
+      {state.showPopup && state.popupData && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000,
+            backdropFilter: 'blur(4px)',
+          }}
+          onClick={handleClosePopup}
+        >
+          {/* Popup Card */}
+          <div 
+            style={{
+              width: '700px',
+              maxWidth: '90vw',
+              maxHeight: '85vh',
+              backgroundColor: '#ffffff',
+              borderRadius: '16px',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+              overflow: 'hidden',
+              display: 'flex',
+              flexDirection: 'column',
+              animation: 'popupIn 0.2s ease-out',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{
+              background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+              padding: '24px',
+              color: 'white',
+              position: 'relative',
+            }}>
               <button
-                onClick={() => handleOpenFile(state.selectedNode.filePath)}
+                onClick={handleClosePopup}
                 style={{
-                  padding: '6px 12px',
-                  fontSize: '12px',
-                  background: '#3b82f6',
-                  color: 'white',
+                  position: 'absolute',
+                  top: '16px',
+                  right: '16px',
+                  background: 'rgba(255,255,255,0.2)',
                   border: 'none',
-                  borderRadius: '4px',
+                  borderRadius: '50%',
+                  width: '32px',
+                  height: '32px',
                   cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '18px',
+                  color: 'white',
+                  transition: 'background 0.2s',
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.3)'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.2)'}
+              >
+                ✕
+              </button>
+              
+              <h2 style={{ 
+                margin: 0, 
+                fontSize: '24px', 
+                fontWeight: '700',
+                marginBottom: '8px',
+              }}>
+                {state.popupData.name}
+              </h2>
+              
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                <span style={{
+                  padding: '4px 12px',
+                  fontSize: '12px',
+                  background: 'rgba(255,255,255,0.2)',
+                  borderRadius: '16px',
+                  fontWeight: '600',
+                  textTransform: 'uppercase',
+                }}>
+                  {state.popupData.type}
+                </span>
+                {state.popupData.patterns.slice(0, 3).map((pattern, i) => (
+                  <span key={i} style={{
+                    padding: '4px 12px',
+                    fontSize: '11px',
+                    background: 'rgba(255,255,255,0.15)',
+                    borderRadius: '16px',
+                  }}>
+                    {pattern}
+                  </span>
+                ))}
+              </div>
+              
+              <button
+                onClick={() => handleOpenFile(state.popupData!.filePath)}
+                style={{
+                  padding: '8px 16px',
+                  fontSize: '12px',
+                  background: 'rgba(255,255,255,0.95)',
+                  color: '#6b46c1',
+                  border: 'none',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontWeight: '600',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
                 }}
               >
-                Open File
+                📂 Open in Editor
               </button>
-            )}
-          </div>
-
-          {/* Dependencies */}
-          {state.dependencies && state.dependencies.length > 0 && (
-            <div style={{ padding: '16px', borderBottom: '1px solid #e5e7eb' }}>
-              <h4 style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#374151' }}>
-                Dependencies ({state.dependencies.length})
-              </h4>
-              <div style={{ fontSize: '12px', color: '#6b7280' }}>
-                {state.dependencies.map((dep: any, i: number) => (
-                  <div key={i} style={{ padding: '4px 0' }}>• {dep}</div>
-                ))}
-              </div>
             </div>
-          )}
 
-          {/* Dependents */}
-          {state.dependents && state.dependents.length > 0 && (
-            <div style={{ padding: '16px', borderBottom: '1px solid #e5e7eb' }}>
-              <h4 style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#374151' }}>
-                Used By ({state.dependents.length})
-              </h4>
-              <div style={{ fontSize: '12px', color: '#6b7280' }}>
-                {state.dependents.map((dep: any, i: number) => (
-                  <div key={i} style={{ padding: '4px 0' }}>• {dep}</div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Documentation */}
-          <div style={{ padding: '16px', flex: 1 }}>
-            <h4 style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#374151' }}>
-              Documentation
-            </h4>
+            {/* Tabs */}
             <div style={{
-              fontSize: '12px',
-              color: '#6b7280',
-              lineHeight: '1.5',
-              whiteSpace: 'pre-wrap',
+              display: 'flex',
+              borderBottom: '1px solid #e5e7eb',
+              background: '#f9fafb',
             }}>
-              {state.documentation || 'No documentation available'}
+              {[
+                { id: 'summary', label: '📋 Summary', icon: '📋' },
+                { id: 'code', label: '💻 Code', icon: '💻' },
+                { id: 'deps', label: '🔗 Dependencies', icon: '🔗' },
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id as any)}
+                  style={{
+                    flex: 1,
+                    padding: '14px 16px',
+                    border: 'none',
+                    background: activeTab === tab.id ? '#ffffff' : 'transparent',
+                    borderBottom: activeTab === tab.id ? '3px solid #667eea' : '3px solid transparent',
+                    cursor: 'pointer',
+                    fontWeight: activeTab === tab.id ? '600' : '500',
+                    color: activeTab === tab.id ? '#667eea' : '#6b7280',
+                    fontSize: '14px',
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
-          </div>
 
-          {/* Send to Cline */}
-          <div style={{ padding: '16px', borderTop: '1px solid #e5e7eb', background: '#ffffff' }}>
-            <h4 style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#374151' }}>
-              Ask Cline
-            </h4>
-            <textarea
-              value={queryText}
-              onChange={(e) => setQueryText(e.target.value)}
-              placeholder="Enter your question..."
-              style={{
-                width: '100%',
-                minHeight: '80px',
-                padding: '8px',
-                fontSize: '12px',
-                border: '1px solid #d1d5db',
-                borderRadius: '4px',
-                marginBottom: '8px',
-                fontFamily: 'inherit',
-              }}
-            />
-            <button
-              onClick={handleSendToCline}
-              disabled={!queryText.trim()}
-              style={{
-                width: '100%',
-                padding: '8px',
-                fontSize: '13px',
-                background: queryText.trim() ? '#10b981' : '#d1d5db',
-                color: 'white',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: queryText.trim() ? 'pointer' : 'not-allowed',
-                fontWeight: '500',
-              }}
-            >
-              Send to Cline
-            </button>
+            {/* Content Area */}
+            <div style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: '20px',
+            }}>
+              {activeTab === 'summary' && (
+                <div>
+                  <div style={{
+                    fontSize: '14px',
+                    lineHeight: '1.7',
+                    color: '#374151',
+                    whiteSpace: 'pre-wrap',
+                    marginBottom: '20px',
+                  }}>
+                    {state.popupData.summary}
+                  </div>
+                  
+                  <div style={{
+                    padding: '16px',
+                    background: '#f3f4f6',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    color: '#4b5563',
+                  }}>
+                    <div style={{ fontWeight: '600', marginBottom: '8px', color: '#374151' }}>
+                      📍 Location Details
+                    </div>
+                    <pre style={{ margin: 0, fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+                      {state.popupData.details}
+                    </pre>
+                  </div>
+
+                  {state.popupData.patterns.length > 0 && (
+                    <div style={{ marginTop: '20px' }}>
+                      <div style={{ fontWeight: '600', marginBottom: '12px', color: '#374151' }}>
+                        🔍 Detected Patterns
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                        {state.popupData.patterns.map((pattern, i) => (
+                          <span key={i} style={{
+                            padding: '6px 14px',
+                            fontSize: '12px',
+                            background: '#dbeafe',
+                            color: '#1e40af',
+                            borderRadius: '16px',
+                            fontWeight: '500',
+                          }}>
+                            {pattern}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {activeTab === 'code' && (
+                <div>
+                  <div style={{
+                    background: '#1e293b',
+                    borderRadius: '8px',
+                    padding: '16px',
+                    overflow: 'auto',
+                    maxHeight: '400px',
+                  }}>
+                    <pre style={{
+                      margin: 0,
+                      color: '#e2e8f0',
+                      fontFamily: '"Fira Code", "Consolas", monospace',
+                      fontSize: '13px',
+                      lineHeight: '1.6',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                    }}>
+                      {state.popupData.sourcePreview || 'No source code available'}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {activeTab === 'deps' && (
+                <div style={{ display: 'flex', gap: '20px' }}>
+                  {/* Dependencies */}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ 
+                      fontWeight: '600', 
+                      marginBottom: '12px', 
+                      color: '#374151',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px'
+                    }}>
+                      <span>📤</span> Imports ({state.popupData.dependencies.length})
+                    </div>
+                    {state.popupData.dependencies.length > 0 ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        {state.popupData.dependencies.map((dep, i) => (
+                          <div key={i} style={{
+                            padding: '10px 14px',
+                            background: '#dbeafe',
+                            borderRadius: '8px',
+                            fontSize: '13px',
+                            color: '#1e40af',
+                            fontWeight: '500',
+                          }}>
+                            → {dep}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ color: '#9ca3af', fontSize: '13px' }}>No dependencies</div>
+                    )}
+                  </div>
+
+                  {/* Dependents */}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ 
+                      fontWeight: '600', 
+                      marginBottom: '12px', 
+                      color: '#374151',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px'
+                    }}>
+                      <span>📥</span> Used By ({state.popupData.dependents.length})
+                    </div>
+                    {state.popupData.dependents.length > 0 ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        {state.popupData.dependents.map((dep, i) => (
+                          <div key={i} style={{
+                            padding: '10px 14px',
+                            background: '#dcfce7',
+                            borderRadius: '8px',
+                            fontSize: '13px',
+                            color: '#166534',
+                            fontWeight: '500',
+                          }}>
+                            ← {dep}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ color: '#9ca3af', fontSize: '13px' }}>Not used by other components</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Ask Cline Footer */}
+            <div style={{
+              padding: '16px 20px',
+              borderTop: '1px solid #e5e7eb',
+              background: '#f9fafb',
+            }}>
+              <div style={{ 
+                display: 'flex', 
+                gap: '12px',
+                alignItems: 'center',
+              }}>
+                <input
+                  type="text"
+                  value={queryText}
+                  onChange={(e) => setQueryText(e.target.value)}
+                  placeholder="Ask Cline about this component..."
+                  style={{
+                    flex: 1,
+                    padding: '12px 16px',
+                    fontSize: '14px',
+                    border: '1px solid #d1d5db',
+                    borderRadius: '8px',
+                    outline: 'none',
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && queryText.trim()) {
+                      handleSendToCline();
+                    }
+                  }}
+                />
+                <button
+                  onClick={handleSendToCline}
+                  disabled={!queryText.trim()}
+                  style={{
+                    padding: '12px 24px',
+                    fontSize: '14px',
+                    background: queryText.trim() ? '#10b981' : '#d1d5db',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: queryText.trim() ? 'pointer' : 'not-allowed',
+                    fontWeight: '600',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  🚀 Send to Cline
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
+
+      {/* CSS Animation */}
+      <style>{`
+        @keyframes popupIn {
+          from {
+            opacity: 0;
+            transform: scale(0.95) translateY(-10px);
+          }
+          to {
+            opacity: 1;
+            transform: scale(1) translateY(0);
+          }
+        }
+      `}</style>
     </div>
   );
 };

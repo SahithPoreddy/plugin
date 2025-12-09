@@ -53,21 +53,31 @@ export class DocumentationGenerator {
   private generateDeveloperDoc(node: CodeNode): string {
     const sections: string[] = [];
 
-    sections.push(`## ${node.label}`);
+    sections.push(`📦 ${node.label}`);
     sections.push('');
-    sections.push(`**Type**: \`${node.type}\``);
-    sections.push(`**Language**: ${node.language}`);
+    
+    // File location
+    const fileName = node.filePath.split(/[\\/]/).pop() || node.filePath;
+    sections.push(`📁 File: ${fileName}`);
+    sections.push(`📍 Lines: ${node.startLine} - ${node.endLine}`);
+    sections.push(`🏷️ Type: ${node.type}`);
+    sections.push(`💻 Language: ${node.language}`);
     sections.push('');
 
     // Technical details
+    const details: string[] = [];
     if (node.visibility) {
-      sections.push(`**Visibility**: ${node.visibility}`);
+      details.push(`${node.visibility}`);
     }
     if (node.isAsync) {
-      sections.push('**Async**: Yes');
+      details.push('async');
     }
     if (node.isStatic) {
-      sections.push('**Static**: Yes');
+      details.push('static');
+    }
+    if (details.length > 0) {
+      sections.push(`⚙️ Modifiers: ${details.join(', ')}`);
+      sections.push('');
     }
 
     // Parameters
@@ -104,12 +114,90 @@ export class DocumentationGenerator {
       }
     }
 
-    // Implementation notes
+    // Source code preview
+    if (node.sourceCode) {
+      sections.push('');
+      sections.push('📝 Code Preview:');
+      // Show first 15 lines of source code
+      const codeLines = node.sourceCode.split('\n').slice(0, 15);
+      if (codeLines.length > 0) {
+        sections.push('```' + node.language);
+        sections.push(codeLines.join('\n'));
+        if (node.sourceCode.split('\n').length > 15) {
+          sections.push('// ... (truncated)');
+        }
+        sections.push('```');
+      }
+    }
+
+    // Smart summary based on code analysis
     sections.push('');
-    sections.push('### Implementation Notes');
-    sections.push(this.generateImplementationNotes(node));
+    sections.push('📋 Summary:');
+    sections.push(this.generateSmartSummary(node));
 
     return sections.join('\n');
+  }
+
+  private generateSmartSummary(node: CodeNode): string {
+    const summaryParts: string[] = [];
+    
+    if (node.type === 'component') {
+      summaryParts.push(`This is a React component that renders UI for ${this.humanizeName(node.label)}.`);
+      if (node.props && node.props.length > 0) {
+        summaryParts.push(`It accepts ${node.props.length} prop(s): ${node.props.slice(0, 5).join(', ')}${node.props.length > 5 ? '...' : ''}.`);
+      }
+      if (node.hooks && node.hooks.length > 0) {
+        summaryParts.push(`Uses hooks: ${node.hooks.join(', ')}.`);
+      }
+    } else if (node.type === 'class') {
+      summaryParts.push(`A ${node.language} class that encapsulates ${this.humanizeName(node.label)} functionality.`);
+    } else if (node.type === 'function' || node.type === 'method') {
+      const paramInfo = node.parameters && node.parameters.length > 0 
+        ? `Takes ${node.parameters.length} parameter(s): ${node.parameters.map(p => p.name).join(', ')}.`
+        : 'Takes no parameters.';
+      const returnInfo = node.returnType ? `Returns: ${node.returnType}.` : '';
+      summaryParts.push(`A ${node.isAsync ? 'async ' : ''}${node.type} that handles ${this.humanizeName(node.label)}.`);
+      summaryParts.push(paramInfo);
+      if (returnInfo) summaryParts.push(returnInfo);
+    } else {
+      summaryParts.push(`This ${node.type} implements ${this.humanizeName(node.label)} logic.`);
+    }
+
+    // Analyze source code for additional insights
+    if (node.sourceCode) {
+      const code = node.sourceCode;
+      const insights: string[] = [];
+      
+      // Check for common patterns
+      if (code.includes('fetch(') || code.includes('axios') || code.includes('http')) {
+        insights.push('Makes HTTP requests');
+      }
+      if (code.includes('useState') || code.includes('setState')) {
+        insights.push('Manages state');
+      }
+      if (code.includes('useEffect') || code.includes('componentDidMount')) {
+        insights.push('Has side effects/lifecycle');
+      }
+      if (code.includes('async ') || code.includes('await ') || code.includes('.then(')) {
+        insights.push('Uses async operations');
+      }
+      if (code.includes('try') && code.includes('catch')) {
+        insights.push('Has error handling');
+      }
+      if (code.includes('localStorage') || code.includes('sessionStorage')) {
+        insights.push('Uses browser storage');
+      }
+      if (code.includes('dispatch') || code.includes('useReducer') || code.includes('Redux')) {
+        insights.push('Uses state management');
+      }
+      
+      if (insights.length > 0) {
+        summaryParts.push('');
+        summaryParts.push('🔍 Key patterns detected: ' + insights.join(', ') + '.');
+      }
+    }
+
+    return summaryParts.join(' ');
   }
 
   /**

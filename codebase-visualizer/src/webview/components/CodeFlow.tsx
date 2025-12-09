@@ -162,14 +162,89 @@ export const CodeFlow: React.FC<CodeFlowProps> = ({ nodes, edges, onNodeClick, e
     return visible;
   }, [nodes, expandedNodes, getChildNodes, getParentNodes]);
   
-  // Convert CodeNode to ReactFlow Node
+  // Convert CodeNode to ReactFlow Node with tree layout
   const flowNodes: Node[] = useMemo(() => {
     console.log('Converting nodes:', nodes.length, 'visible:', visibleNodeIds.size);
     
     // Filter to only visible nodes
     const visibleNodes = nodes.filter(n => visibleNodeIds.has(n.id));
     
-    return visibleNodes.map((node, index) => {
+    // Calculate tree layout - determine level for each node
+    const nodeLevels = new Map<string, number>();
+    const nodeChildren = new Map<string, string[]>();
+    
+    // Find root nodes (entry points or nodes with no parents)
+    const rootNodes = visibleNodes.filter(n => {
+      if (n.isEntryPoint) return true;
+      const parents = getParentNodes(n.id);
+      // Check if any parent is visible
+      const visibleParents = parents.filter(pId => visibleNodeIds.has(pId));
+      return visibleParents.length === 0;
+    });
+    
+    // BFS to assign levels
+    const queue: { nodeId: string; level: number }[] = [];
+    rootNodes.forEach(n => {
+      queue.push({ nodeId: n.id, level: 0 });
+      nodeLevels.set(n.id, 0);
+    });
+    
+    while (queue.length > 0) {
+      const { nodeId, level } = queue.shift()!;
+      const children = getChildNodes(nodeId).filter(cId => visibleNodeIds.has(cId));
+      nodeChildren.set(nodeId, children);
+      
+      children.forEach(childId => {
+        if (!nodeLevels.has(childId)) {
+          nodeLevels.set(childId, level + 1);
+          queue.push({ nodeId: childId, level: level + 1 });
+        }
+      });
+    }
+    
+    // Assign level to any remaining nodes (disconnected)
+    visibleNodes.forEach(n => {
+      if (!nodeLevels.has(n.id)) {
+        nodeLevels.set(n.id, 0);
+      }
+    });
+    
+    // Group nodes by level
+    const levelNodes = new Map<number, CodeNode[]>();
+    visibleNodes.forEach(node => {
+      const level = nodeLevels.get(node.id) || 0;
+      if (!levelNodes.has(level)) {
+        levelNodes.set(level, []);
+      }
+      levelNodes.get(level)!.push(node);
+    });
+    
+    // Layout parameters - more spacing
+    const horizontalSpacing = 320;  // Space between nodes horizontally
+    const verticalSpacing = 220;    // Space between levels vertically
+    const nodeWidth = 200;
+    
+    // Calculate positions for tree layout
+    const nodePositions = new Map<string, { x: number; y: number }>();
+    
+    // Get max level
+    const maxLevel = Math.max(...Array.from(nodeLevels.values()), 0);
+    
+    // Position nodes level by level
+    for (let level = 0; level <= maxLevel; level++) {
+      const nodesAtLevel = levelNodes.get(level) || [];
+      const levelWidth = nodesAtLevel.length * horizontalSpacing;
+      const startX = -levelWidth / 2 + horizontalSpacing / 2;
+      
+      nodesAtLevel.forEach((node, index) => {
+        nodePositions.set(node.id, {
+          x: startX + index * horizontalSpacing,
+          y: level * verticalSpacing
+        });
+      });
+    }
+    
+    return visibleNodes.map((node) => {
       const isEntryPoint = node.isEntryPoint || false;
       const children = getChildNodes(node.id);
       const hasChildren = children.length > 0;
@@ -187,20 +262,41 @@ export const CodeFlow: React.FC<CodeFlowProps> = ({ nodes, edges, onNodeClick, e
         console.log(`✅ WILL RENDER + BUTTON for "${node.label}" with ${children.length} children`);
       }
       
-      const col = index % 4;
-      const row = Math.floor(index / 4);
+      const position = nodePositions.get(node.id) || { x: 0, y: 0 };
       
       return {
         id: node.id,
         type: 'default',
-        position: { x: col * 250, y: row * 150 }, // Grid layout
+        position: position,  // Tree layout position
         data: { 
           label: (
             <div style={{ width: '100%', height: '100%', position: 'relative', overflow: 'visible !important' }}>
-              <div style={{ padding: '8px', textAlign: 'center', paddingBottom: hasChildren ? '20px' : '8px' }}>
-                {isEntryPoint && <div style={{ fontSize: '12px', color: '#16a34a', fontWeight: 'bold' }}>⭐ ENTRY</div>}
-                <div style={{ fontWeight: '600', marginBottom: '2px' }}>{node.label}</div>
-                <div style={{ fontSize: '11px', color: '#666' }}>{node.type}</div>
+              <div style={{ padding: '10px', textAlign: 'center', paddingBottom: hasChildren ? '20px' : '10px' }}>
+                {isEntryPoint && <div style={{ fontSize: '11px', color: '#16a34a', fontWeight: 'bold', marginBottom: '4px' }}>⭐ ENTRY POINT</div>}
+                <div style={{ 
+                  fontWeight: '700', 
+                  fontSize: '14px',
+                  marginBottom: '4px',
+                  color: '#1f2937',
+                  wordBreak: 'break-word'
+                }}>
+                  {node.label}
+                </div>
+                <div style={{ 
+                  fontSize: '10px', 
+                  color: '#6b7280',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px'
+                }}>
+                  {node.type}
+                </div>
+                <div style={{ 
+                  fontSize: '9px', 
+                  color: '#9ca3af',
+                  marginTop: '2px'
+                }}>
+                  {node.language}
+                </div>
                 {hasChildren && (
                   <div 
                     style={{ 
@@ -254,11 +350,12 @@ export const CodeFlow: React.FC<CodeFlowProps> = ({ nodes, edges, onNodeClick, e
         style: {
           background: isEntryPoint ? '#dcfce7' : getNodeColor(node.type),
           border: isEntryPoint ? '3px solid #16a34a' : hasChildren ? '3px solid #2563eb' : '1px solid #d1d5db',
-          borderRadius: '8px',
+          borderRadius: '12px',
           padding: 0,
           fontSize: '13px',
-          width: 180,
-          boxShadow: isEntryPoint ? '0 4px 6px rgba(22, 163, 74, 0.2)' : '0 2px 4px rgba(0,0,0,0.1)',
+          width: 200,
+          minHeight: 80,
+          boxShadow: isEntryPoint ? '0 6px 12px rgba(22, 163, 74, 0.25)' : '0 4px 8px rgba(0,0,0,0.15)',
           overflow: 'visible',
         },
         sourcePosition: Position.Bottom,
@@ -269,41 +366,77 @@ export const CodeFlow: React.FC<CodeFlowProps> = ({ nodes, edges, onNodeClick, e
 
   // Convert CodeEdge to ReactFlow Edge (only for visible nodes)
   const flowEdges: Edge[] = useMemo(() => {
-    // Filter edges to only include connections between visible nodes
-    const visibleEdges = edges.filter(edge => 
-      visibleNodeIds.has(edge.from) && visibleNodeIds.has(edge.to)
-    );
+    // Build a map from filePath to nodeId for quick lookup
+    const filePathToNodeId = new Map<string, string>();
+    nodes.forEach(node => {
+      // Map file path to node ID (if multiple nodes per file, use first one)
+      if (!filePathToNodeId.has(node.filePath)) {
+        filePathToNodeId.set(node.filePath, node.id);
+      }
+    });
     
-    return visibleEdges.map((edge, index) => ({
-      id: `${edge.from}-${edge.to}-${index}`,
-      source: edge.from,
-      target: edge.to,
-      label: edge.type,
-      type: 'default',  // Use default for straighter lines
-      animated: edge.type === 'imports',
-      style: { 
-        stroke: getEdgeColor(edge.type),
-        strokeWidth: 3,  // Thicker lines
-      },
-      markerEnd: {
-        type: MarkerType.ArrowClosed,
-        color: getEdgeColor(edge.type),
-        width: 20,
-        height: 20,
-      },
-      labelStyle: {
-        fontSize: 11,
-        fill: '#1e293b',
-        fontWeight: 600,
-      },
-      labelBgStyle: {
-        fill: '#ffffff',
-        fillOpacity: 0.9,
-        rx: 4,
-        ry: 4,
-      },
-    }));
-  }, [edges, visibleNodeIds]);
+    console.log('📊 Edge mapping:', {
+      totalEdges: edges.length,
+      uniqueFilePaths: filePathToNodeId.size,
+      sampleMappings: Array.from(filePathToNodeId.entries()).slice(0, 3).map(([fp, id]) => ({
+        filePath: fp.split('\\').pop(),
+        nodeId: id.split(':').pop()
+      }))
+    });
+    
+    // Map edges from file paths to node IDs
+    const mappedEdges: Edge[] = [];
+    
+    edges.forEach((edge, index) => {
+      const sourceNodeId = filePathToNodeId.get(edge.from);
+      const targetNodeId = filePathToNodeId.get(edge.to);
+      
+      // Only include edges where both source and target nodes exist and are visible
+      if (sourceNodeId && targetNodeId && 
+          visibleNodeIds.has(sourceNodeId) && visibleNodeIds.has(targetNodeId)) {
+        
+        // Get node labels for better edge label
+        const sourceNode = nodes.find(n => n.id === sourceNodeId);
+        const targetNode = nodes.find(n => n.id === targetNodeId);
+        
+        mappedEdges.push({
+          id: `edge-${index}-${sourceNodeId}-${targetNodeId}`,
+          source: sourceNodeId,
+          target: targetNodeId,
+          label: edge.type === 'imports' ? 'imports' : edge.type,
+          type: 'smoothstep',
+          animated: edge.type === 'imports',
+          style: { 
+            stroke: getEdgeColor(edge.type),
+            strokeWidth: 2,
+          },
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color: getEdgeColor(edge.type),
+            width: 15,
+            height: 15,
+          },
+          labelStyle: {
+            fontSize: 10,
+            fill: '#374151',
+            fontWeight: 500,
+          },
+          labelBgStyle: {
+            fill: '#ffffff',
+            fillOpacity: 0.95,
+            stroke: '#e5e7eb',
+            strokeWidth: 1,
+            rx: 3,
+            ry: 3,
+          },
+        });
+      }
+    });
+    
+    console.log('✅ Mapped edges:', mappedEdges.length, 'of', edges.length);
+    
+    return mappedEdges;
+  }, [edges, nodes, visibleNodeIds]);
 
   const [nodesState, setNodes, onNodesChange] = useNodesState(flowNodes);
   const [edgesState, setEdges, onEdgesChange] = useEdgesState(flowEdges);
@@ -336,7 +469,7 @@ export const CodeFlow: React.FC<CodeFlowProps> = ({ nodes, edges, onNodeClick, e
         onEdgesChange={onEdgesChange}
         onNodeClick={handleNodeClick}
         fitView
-        fitViewOptions={{ padding: 0.2, maxZoom: 1.2 }}
+        fitViewOptions={{ padding: 0.4, maxZoom: 1.0 }}
         attributionPosition="bottom-left"
         defaultEdgeOptions={{
           type: 'default',

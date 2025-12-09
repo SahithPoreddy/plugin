@@ -106,24 +106,36 @@ export class GraphBuilder {
   }
 
   /**
-   * Get all dependencies of a node
+   * Get all dependencies of a node (nodes that this node imports/uses)
    */
   getDependencies(graph: CodeGraph, nodeId: string): CodeNode[] {
-    const depIds = graph.edges
-      .filter(e => e.from === nodeId)
+    // Find the node to get its file path
+    const node = graph.nodes.find(n => n.id === nodeId);
+    if (!node) return [];
+    
+    // Edges use filePath as from/to, not node ID
+    const targetFilePaths = graph.edges
+      .filter(e => e.from === node.filePath)
       .map(e => e.to);
     
-    return graph.nodes.filter(n => depIds.includes(n.id));
+    // Find nodes that match those file paths
+    return graph.nodes.filter(n => targetFilePaths.includes(n.filePath));
   }
 
   /**
-   * Get all nodes that depend on this node
+   * Get all nodes that depend on this node (nodes that import/use this node)
    */
   getDependents(graph: CodeGraph, nodeId: string): CodeNode[] {
-    const depIds = graph.edges
-      .filter(e => e.to === nodeId)
+    // Find the node to get its file path
+    const node = graph.nodes.find(n => n.id === nodeId);
+    if (!node) return [];
+    
+    // Edges use filePath as from/to, not node ID
+    const sourceFilePaths = graph.edges
+      .filter(e => e.to === node.filePath)
       .map(e => e.from);
     
-    return graph.nodes.filter(n => depIds.includes(n.id));
+    // Find nodes that match those file paths
+    return graph.nodes.filter(n => sourceFilePaths.includes(n.filePath));
   }
 }
