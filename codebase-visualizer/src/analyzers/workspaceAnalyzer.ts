@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { CodeGraph, CodeNode, CodeEdge, AnalysisResult, AnalysisError } from '../types/types';
 import { JavaParser } from '../parsers/javaParser';
 import { ReactParser } from '../parsers/reactParser';
+import { PythonParser } from '../parsers/pythonParser';
 import { GraphBuilder } from '../graph/graphBuilder';
 import { EntryPointDetector } from './entryPointDetector';
 import { ImportAnalyzer } from './importAnalyzer';
@@ -10,6 +11,7 @@ import * as path from 'path';
 export class WorkspaceAnalyzer {
   private javaParser: JavaParser;
   private reactParser: ReactParser;
+  private pythonParser: PythonParser;
   private graphBuilder: GraphBuilder;
   private entryPointDetector: EntryPointDetector;
   private importAnalyzer: ImportAnalyzer;
@@ -17,6 +19,7 @@ export class WorkspaceAnalyzer {
   constructor() {
     this.javaParser = new JavaParser();
     this.reactParser = new ReactParser();
+    this.pythonParser = new PythonParser();
     this.graphBuilder = new GraphBuilder();
     this.entryPointDetector = new EntryPointDetector();
     this.importAnalyzer = new ImportAnalyzer();
@@ -49,12 +52,17 @@ export class WorkspaceAnalyzer {
         '**/node_modules/**'
       );
 
-      console.log(`Found ${javaFiles.length} Java files and ${reactFiles.length} React files`);
+      const pythonFiles = await vscode.workspace.findFiles(
+        '**/*.py',
+        '{**/node_modules/**,**/__pycache__/**,**/venv/**,**/.venv/**,**/env/**}'
+      );
+
+      console.log(`Found ${javaFiles.length} Java files, ${reactFiles.length} React/JS files, and ${pythonFiles.length} Python files`);
 
       // Step 3: Build dependency map from imports
       const dependencyMap = new Map<string, string[]>();
       
-      for (const file of [...javaFiles, ...reactFiles]) {
+      for (const file of [...javaFiles, ...reactFiles, ...pythonFiles]) {
         try {
           const deps = await this.importAnalyzer.buildDependencyMap(file, workspaceUri.fsPath);
           const targets = deps.map(d => d.targetFile);
@@ -86,21 +94,29 @@ export class WorkspaceAnalyzer {
         // Parse all files if no entry points found
         javaFiles.forEach(f => filesToParse.add(f.fsPath));
         reactFiles.forEach(f => filesToParse.add(f.fsPath));
+        pythonFiles.forEach(f => filesToParse.add(f.fsPath));
       }
 
       console.log(`Parsing ${filesToParse.size} files...`);
+
+      // Create a set of entry point file paths for quick lookup
+      const entryPointPaths = new Set(entryPoints.map(ep => ep.filePath));
 
       // Step 5: Parse selected files
       for (const filePath of filesToParse) {
         const fileUri = vscode.Uri.file(filePath);
         const ext = path.extname(filePath);
+        const isEntryPointFile = entryPointPaths.has(filePath);
         
         try {
           let result;
           if (ext === '.java') {
-            result = await this.javaParser.parse(fileUri);
+            result = await this.javaParser.parse(fileUri, isEntryPointFile);
           } else if (['.tsx', '.jsx', '.ts', '.js'].includes(ext)) {
-            result = await this.reactParser.parse(fileUri);
+            // Pass isEntryPoint flag to create module node for files like main.tsx
+            result = await this.reactParser.parse(fileUri, isEntryPointFile);
+          } else if (ext === '.py') {
+            result = await this.pythonParser.parse(fileUri, isEntryPointFile);
           } else {
             continue;
           }
@@ -116,20 +132,26 @@ export class WorkspaceAnalyzer {
         }
       }
 
-      // Step 6: Mark entry point nodes
+      // Step 6: Mark entry point nodes and primary entry
       for (const ep of entryPoints) {
         const entryNode = allNodes.find(n => n.filePath === ep.filePath);
         if (entryNode) {
           entryNode.isEntryPoint = true;
+          if (ep.isPrimaryEntry) {
+            entryNode.isPrimaryEntry = true;
+            console.log(`Marked node as PRIMARY entry: ${entryNode.label}`);
+          }
         }
       }
 
       // Step 7: Build the graph with entry points as roots
+      // Pass only the primary entry point as the main root
+      const primaryEntry = entryPoints.find(ep => ep.isPrimaryEntry);
       const graph = this.graphBuilder.buildFromEntryPoints(
         allNodes, 
         allEdges, 
         workspaceUri.fsPath,
-        entryPoints.map(ep => ep.filePath)
+        primaryEntry ? [primaryEntry.filePath] : entryPoints.map(ep => ep.filePath)
       );
 
       const finalResult = {
@@ -141,7 +163,8 @@ export class WorkspaceAnalyzer {
         warnings: warnings.length,
         filesToParse: filesToParse.size,
         totalJavaFiles: javaFiles.length,
-        totalReactFiles: reactFiles.length
+        totalReactFiles: reactFiles.length,
+        totalPythonFiles: pythonFiles.length
       };
       
       console.log('Final analysis result:', finalResult);
@@ -184,6 +207,9 @@ export class WorkspaceAnalyzer {
       return result.nodes;
     } else if (['.tsx', '.jsx', '.ts', '.js'].includes(ext)) {
       const result = await this.reactParser.parse(fileUri);
+      return result.nodes;
+    } else if (ext === '.py') {
+      const result = await this.pythonParser.parse(fileUri);
       return result.nodes;
     }
     

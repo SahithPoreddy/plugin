@@ -341,7 +341,7 @@ const App: React.FC = () => {
             }}>
               {[
                 { id: 'summary', label: '📋 Summary', icon: '📋' },
-                { id: 'code', label: '💻 Code', icon: '💻' },
+                { id: 'code', label: '📝 Signature', icon: '📝' },
                 { id: 'deps', label: '🔗 Dependencies', icon: '🔗' },
               ].map((tab) => (
                 <button
@@ -424,23 +424,25 @@ const App: React.FC = () => {
 
               {activeTab === 'code' && (
                 <div>
+                  <div style={{ marginBottom: '16px', color: '#6b7280', fontSize: '13px' }}>
+                    Function signature showing input parameters and return type:
+                  </div>
                   <div style={{
                     background: '#1e293b',
                     borderRadius: '8px',
-                    padding: '16px',
+                    padding: '20px',
                     overflow: 'auto',
-                    maxHeight: '400px',
                   }}>
                     <pre style={{
                       margin: 0,
-                      color: '#e2e8f0',
+                      color: '#a5d6ff',
                       fontFamily: '"Fira Code", "Consolas", monospace',
-                      fontSize: '13px',
-                      lineHeight: '1.6',
+                      fontSize: '15px',
+                      lineHeight: '1.8',
                       whiteSpace: 'pre-wrap',
                       wordBreak: 'break-word',
                     }}>
-                      {state.popupData.sourcePreview || 'No source code available'}
+                      {state.popupData.sourcePreview || 'No signature available'}
                     </pre>
                   </div>
                 </div>

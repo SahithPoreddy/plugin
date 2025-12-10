@@ -6,6 +6,7 @@ export interface EntryPoint {
   filePath: string;
   type: 'main' | 'index' | 'app' | 'config';
   score: number;
+  isPrimaryEntry?: boolean; // True if this is THE main entry point
 }
 
 export class EntryPointDetector {
@@ -15,19 +16,28 @@ export class EntryPointDetector {
    * - main.java, Main.java, Application.java (Java)
    * - index.tsx, index.ts, App.tsx, main.tsx (React/TS)
    * - Files with main() method or exported entry functions
+   * 
+   * For React projects: index.js/ts/tsx is THE root entry point
+   * For Java projects: The class with main() method is THE root
    */
   async detectEntryPoints(workspaceUri: vscode.Uri): Promise<EntryPoint[]> {
     const entryPoints: EntryPoint[] = [];
 
     // Find potential entry files by name
     const commonEntryNames = [
-      '**/*[Mm]ain.{java,ts,tsx,js,jsx}',
-      '**/*[Aa]pp.{tsx,ts,jsx,js}',
+      '**/*[Mm]ain.{java,ts,tsx,js,jsx,py}',
+      '**/*[Aa]pp.{tsx,ts,jsx,js,py}',
       '**/*[Ii]ndex.{tsx,ts,jsx,js}',
       '**/*[Aa]pplication.java',
       '**/src/index.{tsx,ts,jsx,js}',
       '**/src/App.{tsx,ts,jsx,js}',
-      '**/src/main/java/**/*Application.java'
+      '**/src/main/java/**/*Application.java',
+      '**/__main__.py',
+      '**/manage.py',
+      '**/app.py',
+      '**/run.py',
+      '**/wsgi.py',
+      '**/asgi.py'
     ];
 
     for (const pattern of commonEntryNames) {
@@ -45,9 +55,6 @@ export class EntryPointDetector {
       }
     }
 
-    // Sort by score (highest first)
-    entryPoints.sort((a, b) => b.score - a.score);
-
     // Also scan files with main() methods
     const filesWithMain = await this.findFilesWithMainMethod(workspaceUri);
     entryPoints.push(...filesWithMain);
@@ -55,7 +62,82 @@ export class EntryPointDetector {
     // Deduplicate
     const uniqueEntryPoints = this.deduplicateEntryPoints(entryPoints);
     
+    // Sort by score (highest first)
+    uniqueEntryPoints.sort((a, b) => b.score - a.score);
+
+    // Detect the TRUE primary entry point
+    this.markPrimaryEntryPoint(uniqueEntryPoints);
+    
+    // Put the primary entry point first
+    uniqueEntryPoints.sort((a, b) => {
+      if (a.isPrimaryEntry && !b.isPrimaryEntry) return -1;
+      if (!a.isPrimaryEntry && b.isPrimaryEntry) return 1;
+      return b.score - a.score;
+    });
+    
     return uniqueEntryPoints.slice(0, 10); // Return top 10 entry points
+  }
+
+  /**
+   * Mark the TRUE primary entry point for the project
+   * For React: src/index.tsx, src/index.ts, src/index.jsx, src/index.js, or src/main.tsx
+   * For Java: The file with main() method
+   */
+  private markPrimaryEntryPoint(entryPoints: EntryPoint[]): void {
+    // Priority order for React/TypeScript projects
+    const reactPrimaryPatterns = [
+      /[\\/]src[\\/]index\.(tsx|ts|jsx|js)$/i,
+      /[\\/]src[\\/]main\.(tsx|ts|jsx|js)$/i,
+      /[\\/]index\.(tsx|ts|jsx|js)$/i, // root level index
+      /[\\/]main\.(tsx|ts|jsx|js)$/i,  // root level main
+    ];
+
+    // Check for React/TS primary entry
+    for (const pattern of reactPrimaryPatterns) {
+      const match = entryPoints.find(ep => pattern.test(ep.filePath));
+      if (match) {
+        match.isPrimaryEntry = true;
+        match.score += 100; // Boost score significantly
+        console.log(`Primary entry point detected: ${match.filePath}`);
+        return;
+      }
+    }
+
+    // For Java: The main() method file is primary
+    const javaMain = entryPoints.find(ep => ep.type === 'main' && ep.filePath.endsWith('.java'));
+    if (javaMain) {
+      javaMain.isPrimaryEntry = true;
+      javaMain.score += 100;
+      console.log(`Primary entry point detected (Java main): ${javaMain.filePath}`);
+      return;
+    }
+
+    // For Python: Check common entry patterns
+    const pythonPrimaryPatterns = [
+      /__main__\.py$/i,
+      /[\/]main\.py$/i,
+      /[\/]app\.py$/i,
+      /[\/]manage\.py$/i,
+      /[\/]run\.py$/i,
+      /[\/]wsgi\.py$/i,
+      /[\/]asgi\.py$/i,
+    ];
+
+    for (const pattern of pythonPrimaryPatterns) {
+      const match = entryPoints.find(ep => pattern.test(ep.filePath));
+      if (match) {
+        match.isPrimaryEntry = true;
+        match.score += 100;
+        console.log(`Primary entry point detected (Python): ${match.filePath}`);
+        return;
+      }
+    }
+
+    // Fallback: highest scoring entry point is primary
+    if (entryPoints.length > 0) {
+      entryPoints[0].isPrimaryEntry = true;
+      console.log(`Primary entry point fallback: ${entryPoints[0].filePath}`);
+    }
   }
 
   private calculateEntryPointScore(fileUri: vscode.Uri): number {
@@ -70,6 +152,14 @@ export class EntryPointDetector {
     if (fileName === 'main.tsx' || fileName === 'main.ts') score += 8;
     if (fileName.includes('main.java')) score += 10;
     if (fileName.includes('application.java')) score += 9;
+    
+    // Python entry points
+    if (fileName === '__main__.py') score += 10;
+    if (fileName === 'main.py') score += 9;
+    if (fileName === 'app.py') score += 8;
+    if (fileName === 'manage.py') score += 9;  // Django
+    if (fileName === 'wsgi.py' || fileName === 'asgi.py') score += 7;
+    if (fileName === 'run.py') score += 7;
     
     // Path-based scoring
     if (filePath.includes('src/index')) score += 5;
@@ -115,7 +205,38 @@ export class EntryPointDetector {
       }
     }
 
+    // Find Python files with if __name__ == '__main__'
+    const pythonFiles = await vscode.workspace.findFiles(
+      '**/*.py',
+      '{**/node_modules/**,**/__pycache__/**,**/venv/**,**/.venv/**,**/env/**}',
+      100
+    );
+
+    for (const file of pythonFiles) {
+      const hasMain = await this.hasPythonMainBlock(file);
+      if (hasMain) {
+        entryPoints.push({
+          filePath: file.fsPath,
+          type: 'main',
+          score: 8
+        });
+      }
+    }
+
     return entryPoints;
+  }
+
+  private async hasPythonMainBlock(fileUri: vscode.Uri): Promise<boolean> {
+    try {
+      const document = await vscode.workspace.openTextDocument(fileUri);
+      const content = document.getText();
+      
+      // Check for if __name__ == '__main__': pattern
+      const mainBlockPattern = /if\s+__name__\s*==\s*['"]__main__['"]\s*:/;
+      return mainBlockPattern.test(content);
+    } catch (error) {
+      return false;
+    }
   }
 
   private async hasMainMethod(fileUri: vscode.Uri): Promise<boolean> {

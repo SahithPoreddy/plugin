@@ -9,8 +9,8 @@ export type Persona = 'developer' | 'product-manager' | 'architect' | 'business-
 export interface CodeNode {
   id: string;
   label: string;
-  type: 'class' | 'function' | 'method' | 'component' | 'module' | 'interface';
-  language: 'java' | 'typescript' | 'javascript';
+  type: 'class' | 'function' | 'method' | 'component' | 'module' | 'interface' | 'decorator';
+  language: 'java' | 'typescript' | 'javascript' | 'python';
   filePath: string;
   startLine: number;
   endLine: number;
@@ -20,6 +20,7 @@ export interface CodeNode {
   isAsync?: boolean;
   isStatic?: boolean;
   isEntryPoint?: boolean;  // Mark if this is an entry point
+  isPrimaryEntry?: boolean; // True if this is THE main root (e.g., index.tsx for React)
   parameters?: Parameter[];
   returnType?: string;
   

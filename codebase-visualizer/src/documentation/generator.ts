@@ -1,4 +1,4 @@
-import { CodeNode, Persona, Documentation } from '../types/types';
+import { CodeNode, Persona, Documentation, Parameter } from '../types/types';
 
 /**
  * Generates persona-specific documentation for code nodes
@@ -141,26 +141,46 @@ export class DocumentationGenerator {
   private generateSmartSummary(node: CodeNode): string {
     const summaryParts: string[] = [];
     
+    // Analyze the source code to understand what it does
+    const purposeDescription = this.analyzeFunctionPurpose(node);
+    
     if (node.type === 'component') {
-      summaryParts.push(`This is a React component that renders UI for ${this.humanizeName(node.label)}.`);
-      if (node.props && node.props.length > 0) {
-        summaryParts.push(`It accepts ${node.props.length} prop(s): ${node.props.slice(0, 5).join(', ')}${node.props.length > 5 ? '...' : ''}.`);
-      }
+      summaryParts.push(purposeDescription || `This React component renders the ${this.humanizeName(node.label)} interface.`);
+      
+      // Describe what state it manages
       if (node.hooks && node.hooks.length > 0) {
-        summaryParts.push(`Uses hooks: ${node.hooks.join(', ')}.`);
+        const stateHooks = node.hooks.filter(h => h === 'useState' || h === 'useReducer');
+        const effectHooks = node.hooks.filter(h => h === 'useEffect' || h === 'useLayoutEffect');
+        if (stateHooks.length > 0) {
+          summaryParts.push(`It manages local state to track UI interactions and data.`);
+        }
+        if (effectHooks.length > 0) {
+          summaryParts.push(`It performs side effects like data fetching or DOM updates when dependencies change.`);
+        }
+      }
+      
+      if (node.props && node.props.length > 0) {
+        summaryParts.push(`The component is configurable through ${node.props.length} props that control its behavior and appearance.`);
       }
     } else if (node.type === 'class') {
-      summaryParts.push(`A ${node.language} class that encapsulates ${this.humanizeName(node.label)} functionality.`);
+      summaryParts.push(purposeDescription || `This class encapsulates ${this.humanizeName(node.label)} functionality, providing methods and properties for its domain operations.`);
     } else if (node.type === 'function' || node.type === 'method') {
-      const paramInfo = node.parameters && node.parameters.length > 0 
-        ? `Takes ${node.parameters.length} parameter(s): ${node.parameters.map(p => p.name).join(', ')}.`
-        : 'Takes no parameters.';
-      const returnInfo = node.returnType ? `Returns: ${node.returnType}.` : '';
-      summaryParts.push(`A ${node.isAsync ? 'async ' : ''}${node.type} that handles ${this.humanizeName(node.label)}.`);
-      summaryParts.push(paramInfo);
-      if (returnInfo) summaryParts.push(returnInfo);
+      summaryParts.push(purposeDescription || `This ${node.isAsync ? 'asynchronous ' : ''}${node.type} handles ${this.humanizeName(node.label)} operations.`);
+      
+      // Describe what it does with its parameters
+      if (node.parameters && node.parameters.length > 0) {
+        const paramDesc = this.describeParameters(node.parameters);
+        if (paramDesc) summaryParts.push(paramDesc);
+      }
+      
+      // Describe return value purpose
+      if (node.returnType && node.returnType !== 'void') {
+        summaryParts.push(this.describeReturnValue(node.returnType, node.label));
+      }
+    } else if (node.type === 'module') {
+      summaryParts.push(purposeDescription || `This module serves as the entry point, orchestrating the application initialization and component mounting.`);
     } else {
-      summaryParts.push(`This ${node.type} implements ${this.humanizeName(node.label)} logic.`);
+      summaryParts.push(purposeDescription || `This ${node.type} implements ${this.humanizeName(node.label)} logic.`);
     }
 
     // Analyze source code for additional insights
@@ -198,6 +218,183 @@ export class DocumentationGenerator {
     }
 
     return summaryParts.join(' ');
+  }
+
+  /**
+   * Analyze source code to understand the function's purpose
+   */
+  private analyzeFunctionPurpose(node: CodeNode): string {
+    if (!node.sourceCode) return '';
+    
+    const code = node.sourceCode;
+    const purposes: string[] = [];
+    
+    // Detect data fetching
+    if (code.includes('fetch(') || code.includes('axios') || code.includes('.get(') || code.includes('.post(')) {
+      if (code.includes('.get(') || code.match(/fetch\([^,]+\)\s*(?!.*method)/)) {
+        purposes.push('fetches data from an external API or server');
+      } else if (code.includes('.post(') || code.includes('POST')) {
+        purposes.push('sends data to a server');
+      } else {
+        purposes.push('communicates with an API');
+      }
+    }
+    
+    // Detect form handling
+    if (code.includes('onSubmit') || code.includes('handleSubmit') || code.includes('form')) {
+      purposes.push('processes form submissions');
+    }
+    
+    // Detect navigation/routing
+    if (code.includes('navigate') || code.includes('push(') || code.includes('router') || code.includes('redirect')) {
+      purposes.push('handles navigation between pages');
+    }
+    
+    // Detect data transformation
+    if (code.includes('.map(') || code.includes('.filter(') || code.includes('.reduce(')) {
+      purposes.push('transforms or filters data collections');
+    }
+    
+    // Detect validation
+    if (code.match(/valid|check|verify|assert|ensure/i)) {
+      purposes.push('validates input data');
+    }
+    
+    // Detect event handling
+    if (code.includes('onClick') || code.includes('onChange') || code.includes('onPress') || code.includes('addEventListener')) {
+      purposes.push('responds to user interactions');
+    }
+    
+    // Detect state updates
+    if (code.includes('setState') || code.match(/set[A-Z]\w+\(/)) {
+      purposes.push('updates application state');
+    }
+    
+    // Detect rendering lists
+    if (code.includes('.map(') && (code.includes('<') || code.includes('return'))) {
+      purposes.push('renders a list of items');
+    }
+    
+    // Detect authentication
+    if (code.match(/login|logout|auth|token|session|credential/i)) {
+      purposes.push('handles user authentication');
+    }
+    
+    // Detect error handling
+    if (code.includes('try') && code.includes('catch')) {
+      purposes.push('includes error handling for robust execution');
+    }
+    
+    // Detect context/provider pattern
+    if (code.includes('Provider') || code.includes('Context')) {
+      purposes.push('provides shared state or functionality to child components');
+    }
+    
+    // Detect modal/dialog
+    if (code.match(/modal|dialog|popup|overlay/i)) {
+      purposes.push('manages a modal or dialog interface');
+    }
+    
+    // Build the summary sentence
+    if (purposes.length === 0) return '';
+    
+    const uniquePurposes = [...new Set(purposes)];
+    if (uniquePurposes.length === 1) {
+      return `This ${node.type} ${uniquePurposes[0]}.`;
+    } else if (uniquePurposes.length === 2) {
+      return `This ${node.type} ${uniquePurposes[0]} and ${uniquePurposes[1]}.`;
+    } else {
+      const last = uniquePurposes.pop();
+      return `This ${node.type} ${uniquePurposes.join(', ')}, and ${last}.`;
+    }
+  }
+
+  /**
+   * Describe what the parameters are used for
+   */
+  private describeParameters(params: Parameter[]): string {
+    if (params.length === 0) return '';
+    
+    if (params.length === 1) {
+      const p = params[0];
+      return `It takes a ${p.type || 'value'} parameter (${p.name}) as input.`;
+    } else if (params.length <= 3) {
+      const paramList = params.map(p => `${p.name}${p.optional ? ' (optional)' : ''}`).join(', ');
+      return `It accepts ${params.length} parameters: ${paramList}.`;
+    } else {
+      return `It accepts ${params.length} parameters to configure its behavior.`;
+    }
+  }
+
+  /**
+   * Describe the return value purpose
+   */
+  private describeReturnValue(returnType: string, funcName: string): string {
+    const typeLC = returnType.toLowerCase();
+    
+    if (typeLC.includes('promise')) {
+      return `It returns a Promise that resolves with the result of the async operation.`;
+    } else if (typeLC.includes('boolean') || typeLC === 'bool') {
+      return `It returns a boolean indicating success or a condition check result.`;
+    } else if (typeLC.includes('array') || typeLC.includes('[]')) {
+      return `It returns an array of processed results.`;
+    } else if (typeLC.includes('string')) {
+      return `It returns a string value as output.`;
+    } else if (typeLC.includes('number') || typeLC === 'int' || typeLC === 'float') {
+      return `It returns a numeric result.`;
+    } else if (typeLC === 'void' || typeLC === 'undefined') {
+      return '';
+    } else if (typeLC.includes('jsx') || typeLC.includes('element') || typeLC.includes('react')) {
+      return `It returns JSX elements for rendering.`;
+    } else {
+      return `It returns a ${returnType} object.`;
+    }
+  }
+
+  /**
+   * Generate function signature for display
+   */
+  generateSignature(node: CodeNode): string {
+    const parts: string[] = [];
+    
+    // Modifiers
+    if (node.visibility) parts.push(node.visibility);
+    if (node.isStatic) parts.push('static');
+    if (node.isAsync) parts.push('async');
+    
+    // Function keyword and name
+    if (node.type === 'function' || node.type === 'method') {
+      parts.push('function');
+    } else if (node.type === 'component') {
+      parts.push('const');
+    } else if (node.type === 'class') {
+      parts.push('class');
+    }
+    
+    parts.push(node.label);
+    
+    // Parameters
+    if (node.type !== 'class') {
+      if (node.parameters && node.parameters.length > 0) {
+        const params = node.parameters.map(p => {
+          let param = p.name;
+          if (p.optional) param += '?';
+          if (p.type) param += `: ${p.type}`;
+          if (p.defaultValue) param += ` = ${p.defaultValue}`;
+          return param;
+        }).join(', ');
+        parts.push(`(${params})`);
+      } else {
+        parts.push('()');
+      }
+    }
+    
+    // Return type
+    if (node.returnType) {
+      parts.push(`: ${node.returnType}`);
+    }
+    
+    return parts.join(' ');
   }
 
   /**

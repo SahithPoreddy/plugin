@@ -164,10 +164,17 @@ async function showVisualization(context: vscode.ExtensionContext) {
       progress.report({ increment: 70, message: 'Building visualization...' });
 
       // Create or show visualization panel
-      if (visualizationPanel) {
+      if (visualizationPanel && !visualizationPanel.isDisposed) {
         visualizationPanel.show();
       } else {
+        // Create new panel
         visualizationPanel = new VisualizationPanelReact(context, clineAdapter, ragService);
+        
+        // Set callback to clear reference when panel is closed
+        visualizationPanel.onDispose = () => {
+          visualizationPanel = undefined;
+          logger.log('Visualization panel disposed');
+        };
       }
 
       // Update panel with analysis results

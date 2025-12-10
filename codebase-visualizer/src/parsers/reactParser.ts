@@ -9,7 +9,7 @@ export interface ParseResult {
 }
 
 export class ReactParser {
-  async parse(fileUri: vscode.Uri): Promise<ParseResult> {
+  async parse(fileUri: vscode.Uri, isEntryPoint: boolean = false): Promise<ParseResult> {
     const document = await vscode.workspace.openTextDocument(fileUri);
     const content = document.getText();
     
@@ -66,6 +66,22 @@ export class ReactParser {
         }
       });
 
+      // If no nodes were created but this is an entry file (like main.tsx),
+      // create a module node for the entire file
+      if (nodes.length === 0) {
+        const fileName = fileUri.fsPath.split(/[\\/]/).pop() || 'module';
+        const baseName = fileName.replace(/\.(tsx?|jsx?)$/, '');
+        
+        // Check if this looks like an entry file (has ReactDOM.render or createRoot)
+        const isBootstrapFile = content.includes('createRoot') || 
+                                content.includes('ReactDOM.render') ||
+                                content.includes('render(');
+        
+        if (isBootstrapFile || isEntryPoint) {
+          nodes.push(this.createModuleNode(fileUri, content, baseName));
+        }
+      }
+
       // Extract relationships
       this.extractRelationships(ast, nodes, edges);
 
@@ -74,6 +90,36 @@ export class ReactParser {
       console.error(`Failed to parse ${fileUri.fsPath}:`, error);
       return { nodes: [], edges: [] };
     }
+  }
+
+  /**
+   * Create a module node for files like main.tsx that don't contain components
+   * but are entry points
+   */
+  private createModuleNode(fileUri: vscode.Uri, content: string, name: string): CodeNode {
+    const lines = content.split('\n');
+    
+    return {
+      id: `${fileUri.fsPath}:module:${name}`,
+      label: name,
+      type: 'module',
+      language: fileUri.fsPath.endsWith('.tsx') || fileUri.fsPath.endsWith('.ts') ? 'typescript' : 'javascript',
+      filePath: fileUri.fsPath,
+      startLine: 1,
+      endLine: lines.length,
+      sourceCode: content,
+      isEntryPoint: true,
+      documentation: {
+        summary: `Entry point module ${name}`,
+        description: `Application bootstrap file that initializes React and renders the root component`,
+        persona: {
+          'developer': `Entry point that bootstraps the application. Contains ReactDOM.createRoot() or render() call.`,
+          'product-manager': `Application entry point - where the app starts`,
+          'architect': `Bootstrap module following React 18 patterns`,
+          'business-analyst': `Application initialization`
+        }
+      }
+    };
   }
 
   private isReactComponent(node: any, content: string): boolean {

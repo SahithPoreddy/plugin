@@ -22,6 +22,7 @@ interface CodeNode {
   startLine: number;
   endLine: number;
   isEntryPoint?: boolean;
+  isPrimaryEntry?: boolean; // THE main root (e.g., index.tsx for React)
   sourceCode: string;
 }
 
@@ -125,154 +126,247 @@ export const CodeFlow: React.FC<CodeFlowProps> = ({ nodes, edges, onNodeClick, e
   }, [edges, nodes]);
   
   // Determine which nodes should be visible
-  const visibleNodeIds = useMemo(() => {
-    const visible = new Set<string>();
+  // NEW: Support duplicate nodes - each parent gets its own instance of shared children
+  // Instance ID format: "originalNodeId" for roots, "originalNodeId@parentInstanceId" for children
+  
+  interface NodeInstance {
+    originalId: string;      // Original node ID
+    instanceId: string;      // Unique instance ID (includes parent path)
+    parentInstanceId: string | null;  // Parent's instance ID
+    node: CodeNode;          // Reference to original node data
+  }
+  
+  const { visibleInstances, instanceEdges } = useMemo(() => {
+    const instances: NodeInstance[] = [];
+    const instEdges: { sourceInstanceId: string; targetInstanceId: string; type: string }[] = [];
     
-    // ONLY add entry point nodes initially (not all root nodes)
-    const entryPoints = nodes.filter(n => n.isEntryPoint);
+    // Find primary entry or first entry point
+    const primaryEntry = nodes.find(n => n.isPrimaryEntry);
+    const rootNode = primaryEntry || nodes.find(n => n.isEntryPoint) || nodes[0];
     
-    // If no entry points detected, show nodes with no parents as fallback
-    if (entryPoints.length === 0) {
-      nodes.forEach(node => {
-        const parents = getParentNodes(node.id);
-        if (parents.length === 0) {
-          visible.add(node.id);
-        }
-      });
-    } else {
-      entryPoints.forEach(n => visible.add(n.id));
+    if (!rootNode) {
+      return { visibleInstances: [], instanceEdges: [] };
     }
     
-    // Add children of expanded nodes recursively
-    const addChildren = (nodeId: string) => {
-      if (expandedNodes.has(nodeId)) {
-        const children = getChildNodes(nodeId);
-        children.forEach(childId => {
-          visible.add(childId);
-          addChildren(childId); // Recursive for nested expansions
-        });
+    // Add root as first instance
+    const rootInstance: NodeInstance = {
+      originalId: rootNode.id,
+      instanceId: rootNode.id,  // Root uses original ID
+      parentInstanceId: null,
+      node: rootNode
+    };
+    instances.push(rootInstance);
+    
+    // Recursively add children for expanded nodes
+    // Each child gets a unique instance ID based on its parent
+    const addChildInstances = (parentInstance: NodeInstance) => {
+      if (!expandedNodes.has(parentInstance.originalId)) {
+        return;  // Parent not expanded, don't add children
       }
+      
+      const children = getChildNodes(parentInstance.originalId);
+      
+      children.forEach(childOriginalId => {
+        const childNode = nodes.find(n => n.id === childOriginalId);
+        if (!childNode) return;
+        
+        // Create unique instance ID: childId@parentInstanceId
+        const childInstanceId = `${childOriginalId}@${parentInstance.instanceId}`;
+        
+        const childInstance: NodeInstance = {
+          originalId: childOriginalId,
+          instanceId: childInstanceId,
+          parentInstanceId: parentInstance.instanceId,
+          node: childNode
+        };
+        
+        instances.push(childInstance);
+        
+        // Add edge from parent instance to child instance
+        instEdges.push({
+          sourceInstanceId: parentInstance.instanceId,
+          targetInstanceId: childInstanceId,
+          type: 'imports'
+        });
+        
+        // Recursively add this child's children if it's expanded
+        addChildInstances(childInstance);
+      });
     };
     
-    // Start from visible root/entry nodes
-    Array.from(visible).forEach(nodeId => addChildren(nodeId));
+    // Start from root
+    addChildInstances(rootInstance);
     
-    console.log('Visibility:', { totalNodes: nodes.length, visibleNodes: visible.size, entryPoints: entryPoints.length, expanded: expandedNodes.size });
-    
-    return visible;
-  }, [nodes, expandedNodes, getChildNodes, getParentNodes]);
-  
-  // Convert CodeNode to ReactFlow Node with tree layout
-  const flowNodes: Node[] = useMemo(() => {
-    console.log('Converting nodes:', nodes.length, 'visible:', visibleNodeIds.size);
-    
-    // Filter to only visible nodes
-    const visibleNodes = nodes.filter(n => visibleNodeIds.has(n.id));
-    
-    // Calculate tree layout - determine level for each node
-    const nodeLevels = new Map<string, number>();
-    const nodeChildren = new Map<string, string[]>();
-    
-    // Find root nodes (entry points or nodes with no parents)
-    const rootNodes = visibleNodes.filter(n => {
-      if (n.isEntryPoint) return true;
-      const parents = getParentNodes(n.id);
-      // Check if any parent is visible
-      const visibleParents = parents.filter(pId => visibleNodeIds.has(pId));
-      return visibleParents.length === 0;
+    console.log('Node instances:', { 
+      total: instances.length, 
+      edges: instEdges.length,
+      samples: instances.slice(0, 5).map(i => ({ label: i.node.label, instanceId: i.instanceId.substring(0, 40) }))
     });
+    
+    return { visibleInstances: instances, instanceEdges: instEdges };
+  }, [nodes, expandedNodes, getChildNodes]);
+  
+  // Convert instances to ReactFlow Nodes with tree layout
+  const flowNodes: Node[] = useMemo(() => {
+    console.log('Converting instances:', visibleInstances.length);
+    
+    if (visibleInstances.length === 0) return [];
+    
+    // Build parent-children map from instances
+    const instanceChildren = new Map<string, string[]>();
+    visibleInstances.forEach(inst => {
+      if (inst.parentInstanceId) {
+        const siblings = instanceChildren.get(inst.parentInstanceId) || [];
+        siblings.push(inst.instanceId);
+        instanceChildren.set(inst.parentInstanceId, siblings);
+      }
+    });
+    
+    // Calculate levels
+    const instanceLevels = new Map<string, number>();
+    const rootInstance = visibleInstances.find(i => i.parentInstanceId === null);
+    
+    if (!rootInstance) return [];
     
     // BFS to assign levels
-    const queue: { nodeId: string; level: number }[] = [];
-    rootNodes.forEach(n => {
-      queue.push({ nodeId: n.id, level: 0 });
-      nodeLevels.set(n.id, 0);
-    });
+    const queue: { instanceId: string; level: number }[] = [{ instanceId: rootInstance.instanceId, level: 0 }];
+    instanceLevels.set(rootInstance.instanceId, 0);
     
     while (queue.length > 0) {
-      const { nodeId, level } = queue.shift()!;
-      const children = getChildNodes(nodeId).filter(cId => visibleNodeIds.has(cId));
-      nodeChildren.set(nodeId, children);
+      const { instanceId, level } = queue.shift()!;
+      const children = instanceChildren.get(instanceId) || [];
       
       children.forEach(childId => {
-        if (!nodeLevels.has(childId)) {
-          nodeLevels.set(childId, level + 1);
-          queue.push({ nodeId: childId, level: level + 1 });
+        if (!instanceLevels.has(childId)) {
+          instanceLevels.set(childId, level + 1);
+          queue.push({ instanceId: childId, level: level + 1 });
         }
       });
     }
     
-    // Assign level to any remaining nodes (disconnected)
-    visibleNodes.forEach(n => {
-      if (!nodeLevels.has(n.id)) {
-        nodeLevels.set(n.id, 0);
-      }
-    });
+    // Find root instances (should be just one)
+    const rootInstances = visibleInstances.filter(i => i.parentInstanceId === null);
     
-    // Group nodes by level
-    const levelNodes = new Map<number, CodeNode[]>();
-    visibleNodes.forEach(node => {
-      const level = nodeLevels.get(node.id) || 0;
-      if (!levelNodes.has(level)) {
-        levelNodes.set(level, []);
-      }
-      levelNodes.get(level)!.push(node);
-    });
-    
-    // Layout parameters - more spacing
-    const horizontalSpacing = 320;  // Space between nodes horizontally
-    const verticalSpacing = 220;    // Space between levels vertically
+    // Base layout parameters for LEFT-TO-RIGHT graph layout
     const nodeWidth = 200;
+    const nodeHeight = 80;
+    const minVerticalGap = 30;
+    const minHorizontalGap = 280;
+    const maxHorizontalGap = 400;
     
-    // Calculate positions for tree layout
-    const nodePositions = new Map<string, { x: number; y: number }>();
+    // Helper: Get children instance IDs for a given instance
+    const getInstanceChildren = (instanceId: string): string[] => {
+      return instanceChildren.get(instanceId) || [];
+    };
     
-    // Get max level
-    const maxLevel = Math.max(...Array.from(nodeLevels.values()), 0);
+    // Calculate dynamic spacing based on number of children
+    const getVerticalSpacing = (numChildren: number): number => {
+      if (numChildren <= 2) return nodeHeight + 50;
+      if (numChildren <= 4) return nodeHeight + 35;
+      if (numChildren <= 6) return nodeHeight + 25;
+      return nodeHeight + minVerticalGap;
+    };
     
-    // Position nodes level by level
-    for (let level = 0; level <= maxLevel; level++) {
-      const nodesAtLevel = levelNodes.get(level) || [];
-      const levelWidth = nodesAtLevel.length * horizontalSpacing;
-      const startX = -levelWidth / 2 + horizontalSpacing / 2;
-      
-      nodesAtLevel.forEach((node, index) => {
-        nodePositions.set(node.id, {
-          x: startX + index * horizontalSpacing,
-          y: level * verticalSpacing
-        });
-      });
-    }
+    const getHorizontalSpacing = (numChildren: number): number => {
+      if (numChildren <= 1) return minHorizontalGap;
+      if (numChildren <= 3) return minHorizontalGap + 30;
+      if (numChildren <= 6) return minHorizontalGap + 60;
+      return maxHorizontalGap;
+    };
     
-    return visibleNodes.map((node) => {
-      const isEntryPoint = node.isEntryPoint || false;
-      const children = getChildNodes(node.id);
-      const hasChildren = children.length > 0;
-      const isExpanded = expandedNodes.has(node.id);
-      
-      console.log(`Node "${node.label}" (${node.id}):`, {
-        hasChildren,
-        childrenCount: children.length,
-        children: children.slice(0, 3),
-        isExpanded,
-        willRenderButton: hasChildren
-      });
-      
-      if (hasChildren) {
-        console.log(`✅ WILL RENDER + BUTTON for "${node.label}" with ${children.length} children`);
+    // Calculate positions for LEFT-TO-RIGHT layout
+    const instancePositions = new Map<string, { x: number; y: number }>();
+    const instanceSubtreeHeight = new Map<string, number>();
+    
+    // First pass: Calculate subtree height for each instance
+    const calculateSubtreeHeight = (instanceId: string): number => {
+      if (instanceSubtreeHeight.has(instanceId)) {
+        return instanceSubtreeHeight.get(instanceId)!;
       }
       
-      const position = nodePositions.get(node.id) || { x: 0, y: 0 };
+      const children = getInstanceChildren(instanceId);
+      
+      if (children.length === 0) {
+        instanceSubtreeHeight.set(instanceId, nodeHeight);
+        return nodeHeight;
+      }
+      
+      const vSpacing = getVerticalSpacing(children.length);
+      const childrenHeight = children.reduce((sum, childId) => {
+        return sum + calculateSubtreeHeight(childId);
+      }, 0);
+      
+      const totalHeight = childrenHeight + (children.length - 1) * (vSpacing - nodeHeight);
+      const height = Math.max(nodeHeight, totalHeight);
+      instanceSubtreeHeight.set(instanceId, height);
+      return height;
+    };
+    
+    // Calculate heights starting from roots
+    rootInstances.forEach(ri => calculateSubtreeHeight(ri.instanceId));
+    
+    // Second pass: Position instances LEFT-TO-RIGHT
+    const positionInstance = (instanceId: string, xPosition: number, centerY: number) => {
+      instancePositions.set(instanceId, {
+        x: xPosition,
+        y: centerY - nodeHeight / 2
+      });
+      
+      const children = getInstanceChildren(instanceId);
+      if (children.length === 0) return;
+      
+      const vSpacing = getVerticalSpacing(children.length);
+      const hSpacing = getHorizontalSpacing(children.length);
+      
+      const childrenTotalHeight = children.reduce((sum, childId) => {
+        return sum + (instanceSubtreeHeight.get(childId) || nodeHeight);
+      }, 0) + (children.length - 1) * (vSpacing - nodeHeight);
+      
+      let currentY = centerY - childrenTotalHeight / 2;
+      const childX = xPosition + nodeWidth + hSpacing;
+      
+      children.forEach(childId => {
+        const childHeight = instanceSubtreeHeight.get(childId) || nodeHeight;
+        const childCenterY = currentY + childHeight / 2;
+        positionInstance(childId, childX, childCenterY);
+        currentY += childHeight + (vSpacing - nodeHeight);
+      });
+    };
+    
+    // Position root instances
+    const rootVSpacing = getVerticalSpacing(rootInstances.length);
+    const rootTotalHeight = rootInstances.reduce((sum, ri) => {
+      return sum + (instanceSubtreeHeight.get(ri.instanceId) || nodeHeight);
+    }, 0) + (rootInstances.length - 1) * rootVSpacing;
+    
+    let rootStartY = -rootTotalHeight / 2;
+    
+    rootInstances.forEach(ri => {
+      const subtreeHeight = instanceSubtreeHeight.get(ri.instanceId) || nodeHeight;
+      const centerY = rootStartY + subtreeHeight / 2;
+      positionInstance(ri.instanceId, 0, centerY);
+      rootStartY += subtreeHeight + rootVSpacing;
+    });
+    
+    // Convert instances to ReactFlow nodes
+    return visibleInstances.map((instance) => {
+      const node = instance.node;
+      const isEntryPoint = node.isEntryPoint || false;
+      const children = getChildNodes(instance.originalId);
+      const hasChildren = children.length > 0;
+      const isExpanded = expandedNodes.has(instance.originalId);
+      
+      const position = instancePositions.get(instance.instanceId) || { x: 0, y: 0 };
       
       return {
-        id: node.id,
+        id: instance.instanceId,  // Use instance ID for unique identification
         type: 'default',
-        position: position,  // Tree layout position
+        position: position,
         data: { 
           label: (
             <div style={{ width: '100%', height: '100%', position: 'relative', overflow: 'visible !important' }}>
               <div style={{ padding: '10px', textAlign: 'center', paddingBottom: hasChildren ? '20px' : '10px' }}>
-                {isEntryPoint && <div style={{ fontSize: '11px', color: '#16a34a', fontWeight: 'bold', marginBottom: '4px' }}>⭐ ENTRY POINT</div>}
+                {isEntryPoint && <div style={{ fontSize: '11px', color: '#16a34a', fontWeight: 'bold', marginBottom: '4px' }}>⭐ ENTRY</div>}
                 <div style={{ 
                   fontWeight: '700', 
                   fontSize: '14px',
@@ -290,13 +384,6 @@ export const CodeFlow: React.FC<CodeFlowProps> = ({ nodes, edges, onNodeClick, e
                 }}>
                   {node.type}
                 </div>
-                <div style={{ 
-                  fontSize: '9px', 
-                  color: '#9ca3af',
-                  marginTop: '2px'
-                }}>
-                  {node.language}
-                </div>
                 {hasChildren && (
                   <div 
                     style={{ 
@@ -305,38 +392,29 @@ export const CodeFlow: React.FC<CodeFlowProps> = ({ nodes, edges, onNodeClick, e
                       cursor: 'pointer',
                       background: isExpanded ? '#dc2626' : '#2563eb',
                       color: 'white',
-                      border: '3px solid white',
+                      border: '2px solid white',
                       borderRadius: '50%',
-                      width: '36px',
-                      height: '36px',
-                      lineHeight: '30px',
+                      width: '28px',
+                      height: '28px',
+                      lineHeight: '24px',
                       textAlign: 'center',
-                      fontSize: '24px',
+                      fontSize: '18px',
                       fontWeight: '900',
-                      boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
                       transition: 'all 0.2s ease',
                       userSelect: 'none',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.transform = 'scale(1.15)';
-                      e.currentTarget.style.boxShadow = '0 6px 16px rgba(0,0,0,0.6)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.transform = 'scale(1)';
-                      e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.5)';
                     }}
                     onClick={(e) => {
                       e.stopPropagation();
                       const newSet = new Set(expandedNodes);
                       if (isExpanded) {
-                        newSet.delete(node.id);
+                        newSet.delete(instance.originalId);
                       } else {
-                        newSet.add(node.id);
+                        newSet.add(instance.originalId);
                       }
-                      console.log('🔘 Toggle expand:', node.id, 'expanded:', !isExpanded, 'children:', children.length);
                       setExpandedNodes(newSet);
                     }}
-                    title={isExpanded ? `Collapse (hide ${children.length} dependencies)` : `Expand (show ${children.length} dependencies)`}
+                    title={isExpanded ? `Collapse` : `Expand (${children.length})`}
                   >
                     {isExpanded ? '−' : '+'}
                   </div>
@@ -345,98 +423,48 @@ export const CodeFlow: React.FC<CodeFlowProps> = ({ nodes, edges, onNodeClick, e
             </div>
           ),
           codeNode: node,
+          originalId: instance.originalId,
           hasChildren
         },
         style: {
           background: isEntryPoint ? '#dcfce7' : getNodeColor(node.type),
-          border: isEntryPoint ? '3px solid #16a34a' : hasChildren ? '3px solid #2563eb' : '1px solid #d1d5db',
-          borderRadius: '12px',
+          border: isEntryPoint ? '3px solid #16a34a' : hasChildren ? '2px solid #2563eb' : '1px solid #d1d5db',
+          borderRadius: '10px',
           padding: 0,
           fontSize: '13px',
-          width: 200,
-          minHeight: 80,
-          boxShadow: isEntryPoint ? '0 6px 12px rgba(22, 163, 74, 0.25)' : '0 4px 8px rgba(0,0,0,0.15)',
+          width: nodeWidth,
+          minHeight: nodeHeight,
+          boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
           overflow: 'visible',
         },
-        sourcePosition: Position.Bottom,
-        targetPosition: Position.Top,
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
       };
     });
-  }, [nodes, visibleNodeIds, expandedNodes, getChildNodes]);
+  }, [visibleInstances, expandedNodes, getChildNodes, setExpandedNodes]);
 
-  // Convert CodeEdge to ReactFlow Edge (only for visible nodes)
+  // Convert instanceEdges to ReactFlow Edge format
   const flowEdges: Edge[] = useMemo(() => {
-    // Build a map from filePath to nodeId for quick lookup
-    const filePathToNodeId = new Map<string, string>();
-    nodes.forEach(node => {
-      // Map file path to node ID (if multiple nodes per file, use first one)
-      if (!filePathToNodeId.has(node.filePath)) {
-        filePathToNodeId.set(node.filePath, node.id);
-      }
-    });
+    console.log('📊 Converting instance edges:', instanceEdges.length);
     
-    console.log('📊 Edge mapping:', {
-      totalEdges: edges.length,
-      uniqueFilePaths: filePathToNodeId.size,
-      sampleMappings: Array.from(filePathToNodeId.entries()).slice(0, 3).map(([fp, id]) => ({
-        filePath: fp.split('\\').pop(),
-        nodeId: id.split(':').pop()
-      }))
-    });
-    
-    // Map edges from file paths to node IDs
-    const mappedEdges: Edge[] = [];
-    
-    edges.forEach((edge, index) => {
-      const sourceNodeId = filePathToNodeId.get(edge.from);
-      const targetNodeId = filePathToNodeId.get(edge.to);
-      
-      // Only include edges where both source and target nodes exist and are visible
-      if (sourceNodeId && targetNodeId && 
-          visibleNodeIds.has(sourceNodeId) && visibleNodeIds.has(targetNodeId)) {
-        
-        // Get node labels for better edge label
-        const sourceNode = nodes.find(n => n.id === sourceNodeId);
-        const targetNode = nodes.find(n => n.id === targetNodeId);
-        
-        mappedEdges.push({
-          id: `edge-${index}-${sourceNodeId}-${targetNodeId}`,
-          source: sourceNodeId,
-          target: targetNodeId,
-          label: edge.type === 'imports' ? 'imports' : edge.type,
-          type: 'smoothstep',
-          animated: edge.type === 'imports',
-          style: { 
-            stroke: getEdgeColor(edge.type),
-            strokeWidth: 2,
-          },
-          markerEnd: {
-            type: MarkerType.ArrowClosed,
-            color: getEdgeColor(edge.type),
-            width: 15,
-            height: 15,
-          },
-          labelStyle: {
-            fontSize: 10,
-            fill: '#374151',
-            fontWeight: 500,
-          },
-          labelBgStyle: {
-            fill: '#ffffff',
-            fillOpacity: 0.95,
-            stroke: '#e5e7eb',
-            strokeWidth: 1,
-            rx: 3,
-            ry: 3,
-          },
-        });
-      }
-    });
-    
-    console.log('✅ Mapped edges:', mappedEdges.length, 'of', edges.length);
-    
-    return mappedEdges;
-  }, [edges, nodes, visibleNodeIds]);
+    return instanceEdges.map((edge, index) => ({
+      id: `edge-${index}-${edge.sourceInstanceId}-${edge.targetInstanceId}`,
+      source: edge.sourceInstanceId,
+      target: edge.targetInstanceId,
+      type: 'straight',
+      animated: false,
+      style: { 
+        stroke: '#1e293b',
+        strokeWidth: 1.5,
+      },
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        color: '#1e293b',
+        width: 10,
+        height: 10,
+      },
+    }));
+  }, [instanceEdges]);
 
   const [nodesState, setNodes, onNodesChange] = useNodesState(flowNodes);
   const [edgesState, setEdges, onEdgesChange] = useEdgesState(flowEdges);

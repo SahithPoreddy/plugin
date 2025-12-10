@@ -18,6 +18,8 @@ export class VisualizationPanelReact {
   private disposables: vscode.Disposable[] = [];
   private webviewReady: boolean = false;
   private pendingMessages: any[] = [];
+  private _isDisposed: boolean = false;
+  private _onDisposeCallback: (() => void) | undefined;
 
   constructor(context: vscode.ExtensionContext, clineAdapter: ClineAdapter, ragService?: RAGService) {
     this.context = context;
@@ -105,6 +107,8 @@ export class VisualizationPanelReact {
       try {
         const ragInfo = await this.ragService.getComponentInfo(node.label);
         if (ragInfo) {
+          // Generate signature for the node
+          const signature = this.docGenerator.generateSignature(node);
           popupData = {
             name: ragInfo.name,
             type: ragInfo.type,
@@ -114,7 +118,7 @@ export class VisualizationPanelReact {
             dependents: ragInfo.dependents,
             patterns: ragInfo.patterns,
             filePath: ragInfo.filePath || node.filePath,
-            sourcePreview: ragInfo.sourcePreview || node.sourceCode.split('\n').slice(0, 15).join('\n')
+            sourcePreview: signature
           };
         }
       } catch (error) {
@@ -127,6 +131,7 @@ export class VisualizationPanelReact {
       const dependencies = this.graphBuilder.getDependencies(this.currentAnalysis.graph, nodeId);
       const dependents = this.graphBuilder.getDependents(this.currentAnalysis.graph, nodeId);
       const documentation = this.docGenerator.generateForNode(node, this.currentPersona);
+      const signature = this.docGenerator.generateSignature(node);
 
       popupData = {
         name: node.label,
@@ -137,7 +142,7 @@ export class VisualizationPanelReact {
         dependents: dependents.map(d => d.label),
         patterns: this.detectPatterns(node.sourceCode),
         filePath: node.filePath,
-        sourcePreview: node.sourceCode.split('\n').slice(0, 15).join('\n')
+        sourcePreview: signature
       };
     }
 
@@ -258,9 +263,31 @@ export class VisualizationPanelReact {
     this.panel?.reveal();
   }
 
+  /**
+   * Check if the panel has been disposed
+   */
+  get isDisposed(): boolean {
+    return this._isDisposed;
+  }
+
+  /**
+   * Set a callback to be called when the panel is disposed
+   */
+  set onDispose(callback: () => void) {
+    this._onDisposeCallback = callback;
+  }
+
   dispose() {
+    this._isDisposed = true;
     this.panel?.dispose();
     this.disposables.forEach(d => d.dispose());
+    this.disposables = [];
+    this.panel = undefined;
+    
+    // Call the dispose callback if set
+    if (this._onDisposeCallback) {
+      this._onDisposeCallback();
+    }
   }
 
   private getHtmlContent(): string {
